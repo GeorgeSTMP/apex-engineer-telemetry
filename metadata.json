@@ -1,0 +1,10 @@
+{
+  "name": "Remix ApexEngineer",
+  "description": "Real-time AI sim racing coach, voice race engineer, car setup advisor, and telemetry analyzer for Le Mans Ultimate and GT/Hypercar racing.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

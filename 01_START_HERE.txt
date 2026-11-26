@@ -1,0 +1,45 @@
+====================================================================
+  APEX ENGINEER — NATIVE DESKTOP APP QUICK START (1-CLICK)
+====================================================================
+
+Ignore the technical subfolders (dist, dist-server, scripts) —
+you only need the files at the top of this folder:
+
+  - ApexEngineer.exe           <- DOUBLE-CLICK to launch instantly!
+  - Create_Desktop_Shortcut.bat <- Optional: pins icon to Desktop & Start Menu
+  - 00_ADD_API_KEY_HERE.txt    <- Optional: add your free Gemini API key
+  - 03_START_LMU_BRIDGE.bat    <- Optional standalone LMU / UDP bridge
+
+--------------------------------------------------------------------
+1. FAST LAUNCH (NATIVE WINDOW — NO CHROME WINDOW!)
+--------------------------------------------------------------------
+- Double-click ApexEngineer.exe.
+- Opens immediately in its own native Windows desktop window with the
+  ApexEngineer app icon (no Chrome window, no browser tabs, no console).
+- On first launch on a fresh PC without Node.js, it automatically sets
+  up a portable runtime inside ".nodejs" once. Every launch after that
+  starts in under a second.
+- To create a Desktop shortcut with the ApexEngineer icon, either:
+    * Double-click Create_Desktop_Shortcut.bat, OR
+    * Click the top-left icon of the ApexEngineer window ->
+      "Create Desktop Shortcut", OR
+    * Right-click ApexEngineer.exe -> Pin to taskbar / Send to Desktop.
+
+--------------------------------------------------------------------
+2. OPTIONAL: FREE GEMINI API KEY (FOR AI VOICE & DEBRIEF)
+--------------------------------------------------------------------
+- Without a key, all core features work locally offline: live telemetry,
+  maps, tire temps/wear, racecraft spotter ("Car left/right", "Accident
+  ahead"), setup advisor, and English browser radio voice.
+- For Gemini Live voice & AI debrief coaching:
+  1. Get a free key at https://aistudio.google.com/apikey
+  2. Paste it into 00_ADD_API_KEY_HERE.txt and save (Ctrl+S).
+
+--------------------------------------------------------------------
+3. LE MANS ULTIMATE / ACC / rF2 LIVE TELEMETRY
+--------------------------------------------------------------------
+- Just open Le Mans Ultimate and ApexEngineer.exe automatically
+  detects the game process, menus/garage vs on-track state, car/track,
+  gaps, yellow flags, and incidents ahead on 127.0.0.1:6397 (read-only).
+- UDP telemetry port 5606 is also built directly into ApexEngineer.exe.
+====================================================================
