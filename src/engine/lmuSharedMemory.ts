@@ -655,6 +655,7 @@ function parseVehicleAndScoringCore(params: {
       isPaused,
       ...(inFormationLap ? { inFormationLap: true } : {}),
       ...(penaltyActive ? { penaltyActive: true } : {}),
+      ...(lapInvalidated ? { lapInvalidated: true } : {}),
       ...(flatTire ? { flatTire: true } : {}),
       ...(wheelDetached ? { wheelDetached: true } : {}),
       ...(posX !== undefined ? { posX } : {}),

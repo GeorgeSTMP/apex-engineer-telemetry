@@ -9,6 +9,7 @@ import type {
   DriverSkillMetrics,
   PriorityCornerDrill,
   ReferenceSample,
+  SimSessionType,
   TelemetryFrame,
   TrackProfile,
 } from '../types/telemetry';
@@ -87,9 +88,11 @@ export function evaluateLiveTelemetry(
   settings: CoachSettings,
   cooldowns: CooldownMap,
   driverProfile?: DriverProfile,
-  car?: CarProfile
+  car?: CarProfile,
+  context?: { sessionType?: SimSessionType }
 ): { callout: CoachCallout | null; nextCooldowns: CooldownMap } {
   const now = frame.timestampMs;
+  const activeSessionType: SimSessionType = context?.sessionType ?? frame.sessionType ?? 'unknown';
   const prevChannels = cooldowns.channels ?? {};
   const nextCooldowns: CooldownMap = {
     ...cooldowns,
@@ -214,7 +217,40 @@ export function evaluateLiveTelemetry(
     };
   }
 
-  // 1c. Formation / Rolling Start Coaching (LMU class lane discipline + tire temp conditioning)
+  // 1b-2. Pit Lane Speeding Alert (LMU enforces strict 60 km/h pit speed limit -> automatic Drive-Through)
+  if (frame.inPitOrGarage && frame.speedKmh > 62 && canFire('strategy', 4500, true, 'pit_speeding')) {
+    const msg =
+      protocol === 'pro_terse'
+        ? `Pit limiter! Slow to 60 — ${Math.round(frame.speedKmh)} km/h.`
+        : `Pit lane speeding at ${Math.round(frame.speedKmh)} km/h! Engage your pit limiter under 60 km/h immediately or stewards will issue a drive-through.`;
+    return {
+      callout: makeCallout('strategy', 'urgent', 'Pit Lane', msg, undefined, 'pit_speeding'),
+      nextCooldowns,
+    };
+  }
+
+  // 1b-3. Suppress on-track braking, apex, cold-tire, and pre-corner chatter while in pit lane or garage stall
+  if (frame.inPitOrGarage) {
+    return { callout: null, nextCooldowns };
+  }
+
+  // 1b-4. Rolling Start Green Flag transition
+  if (
+    prevFrame?.inFormationLap === true &&
+    !frame.inFormationLap &&
+    canFire('strategy', 10000, true, 'green_flag')
+  ) {
+    const msg =
+      protocol === 'pro_terse'
+        ? 'Green, green, green! Cold tires Turn 1.'
+        : 'Green, green, green! Race is live — remember LMU has no tire warmers, so brake early into Turn 1 and protect the inside.';
+    return {
+      callout: makeCallout('strategy', 'urgent', 'Green Flag', msg, undefined, 'green_flag'),
+      nextCooldowns,
+    };
+  }
+
+  // 1c. Formation / Rolling Start Coaching (LMU class lane discipline + 60 km/h S/F zone + tire conditioning)
   if (frame.inFormationLap) {
     const avgFormTemp =
       (frame.tireTempC.fl +
@@ -223,8 +259,12 @@ export function evaluateLiveTelemetry(
         frame.tireTempC.rr) /
       4;
     if (canFire('strategy', 12000, false, 'formation_lap')) {
-      const msg =
-        avgFormTemp < 50
+      const nearGreenZone = frame.lapDistPct >= 0.86;
+      const msg = nearGreenZone
+        ? protocol === 'pro_terse'
+          ? 'Final sector — hold 60 km/h, ready for green.'
+          : 'Final sector rolling start — respect the 60 km/h formation limit, hold your class lane, and prepare for cold Turn 1 braking.'
+        : avgFormTemp < 50
           ? protocol === 'pro_terse'
             ? 'Formation: weave gently under 50°C, hold class lane.'
             : 'Formation lap: weave gently while tires are under 50°C and hold your class lane until the green Start/Finish line.'
@@ -356,8 +396,8 @@ export function evaluateLiveTelemetry(
         } else if (racecraft.posture === 'defend_inside') {
           const distM = Math.abs(Math.round(opp.distanceMeters));
           directMsg = racecraft.safeToDefend
-            ? `#${opp.carNumber} ${distM}m back — cover inside.`
-            : `#${opp.carNumber} ${distM}m dive — hold outside.`;
+            ? `#${opp.carNumber} (${distM}m back) — cover inside.`
+            : `#${opp.carNumber} (${distM}m dive) — hold outside.`;
         } else if (racecraft.posture === 'attack_opportunity') {
           directMsg = `Pass #${opp.carNumber} inside, ${shortTurn(nextCorner, 'next turn')}.`;
         }
@@ -483,7 +523,28 @@ export function evaluateLiveTelemetry(
     };
   }
 
-  // 5. Track limits warning (always active when trackLimitsAlertsEnabled is ON)
+  // 5. Track limits warning & Qualifying/Practice lap deletion coaching
+  if (
+    (settings.trackLimitsAlertsEnabled ?? true) &&
+    frame.lapInvalidated &&
+    !prevFrame?.lapInvalidated &&
+    canFire('track_limits', 8000, activeSessionType === 'qualifying', 'lap_invalidated')
+  ) {
+    const exitLabel = formatCornerLabel(activeCorner, 'en', 'Track Limits');
+    const msg =
+      activeSessionType === 'qualifying'
+        ? protocol === 'pro_terse'
+          ? 'Lap deleted — reset gap for next flyer.'
+          : `Lap deleted at ${exitLabel} for track limits — cool the tires and build a clean-air gap for your next flying lap.`
+        : protocol === 'pro_terse'
+          ? `Lap invalidated ${shortTurn(activeCorner, 'exit')} — stay inside.`
+          : `Lap invalidated for track limits at ${exitLabel} — keep two wheels inside the white line to avoid penalty points.`;
+    return {
+      callout: makeCallout('track_limits', 'warning', exitLabel, msg, undefined, 'lap_invalidated'),
+      nextCooldowns,
+    };
+  }
+
   if (
     (settings.trackLimitsAlertsEnabled ?? true) &&
     frame.offTrackRisk >= 0.82 &&
@@ -522,7 +583,7 @@ export function evaluateLiveTelemetry(
     };
   }
 
-  // 5b-1. LMU Hypercar Virtual Energy critical alert (0% VE triggers stop-and-go penalty)
+  // 5b-1. LMU Hypercar Virtual Energy critical alert (0% VE triggers 100s stop-and-go penalty)
   if (
     (settings.fuelAlertsEnabled ?? true) &&
     (car?.carClass === 'Hypercar' || frame.carClass === 'Hypercar') &&
@@ -535,14 +596,14 @@ export function evaluateLiveTelemetry(
     const msg =
       protocol === 'pro_terse'
         ? `Box this lap. Virtual Energy ${vePct}%.`
-        : `Virtual Energy critical (${vePct}% left)! Lift & coast or box now — 0% VE triggers a stop-and-go penalty.`;
+        : `Virtual Energy critical (${vePct}% left)! Lift & coast or box now — 0% VE triggers a 100-second stop-and-go penalty.`;
     return {
       callout: makeCallout('fuel', 'urgent', 'Virtual Energy', msg, undefined, 'virtual_energy_critical'),
       nextCooldowns,
     };
   }
 
-  // 5b-1b. Pit Exit Cold Slicks Reminder (LMU has no tire warmers)
+  // 5b-1b. Pit Exit Cold Slicks + Rejoin Traffic Check (LMU has no tire warmers)
   if (
     allowTires &&
     !frame.inPitOrGarage &&
@@ -550,21 +611,38 @@ export function evaluateLiveTelemetry(
     frame.speedKmh >= 35 &&
     canFire('tires', 16000, false, 'pit_exit_cold')
   ) {
+    const rejoinTraffic = (frame.opponents ?? [])
+      .filter((o) => !o.inPits && o.distanceMeters < 0 && o.distanceMeters >= -160)
+      .sort((a, b) => b.distanceMeters - a.distanceMeters)[0];
+    const trafficClause = rejoinTraffic
+      ? ` Watch #${rejoinTraffic.carNumber} (${Math.abs(Math.round(rejoinTraffic.distanceMeters))}m back) on merge.`
+      : '';
     const msg =
       protocol === 'pro_terse'
-        ? 'Pit exit: cold slicks, zero warmers — brake early T1.'
-        : 'Pit exit with cold slicks — LMU uses no tire warmers. Brake early into Turn 1 and build tire heat smoothly.';
+        ? rejoinTraffic
+          ? `Pit exit: cold slicks, watch #${rejoinTraffic.carNumber} merging.`
+          : 'Pit exit: cold slicks, zero warmers — brake early T1.'
+        : `Pit exit with cold slicks — LMU uses no tire warmers. Brake early into Turn 1 and build tire heat smoothly.${trafficClause}`;
     return {
       callout: makeCallout('tires', 'warning', 'Pit Exit', msg, undefined, 'pit_exit_cold'),
       nextCooldowns,
     };
   }
 
-  // 5b-2. Pit window countdown (~2 laps remaining before dry)
+  // 5b-2. Pit window countdown (~2 laps remaining before dry on Fuel OR Hypercar Virtual Energy)
+  const isHypercarClass = car?.carClass === 'Hypercar' || frame.carClass === 'Hypercar';
+  const lowFuelWindow = frame.fuelLiters > 6.5 && frame.fuelLiters <= 11.5;
+  const lowVeWindow =
+    isHypercarClass &&
+    typeof frame.virtualEnergyPct === 'number' &&
+    frame.virtualEnergyPct > 14 &&
+    frame.virtualEnergyPct <= 24;
+
   if (
     settings.pitWindowCountdownEnabled &&
-    frame.fuelLiters > 6.5 &&
-    frame.fuelLiters <= 11.5 &&
+    activeSessionType !== 'practice' &&
+    activeSessionType !== 'qualifying' &&
+    (lowFuelWindow || lowVeWindow) &&
     canFire('strategy', 28000, false, 'pit_window')
   ) {
     const estBurn =
@@ -573,15 +651,24 @@ export function evaluateLiveTelemetry(
         : track.lengthKm > 9
           ? 5.2
           : 2.9;
-    const estLapsLeft = Math.max(0.8, frame.fuelLiters / estBurn);
-    const isHypercar = car?.carClass === 'Hypercar' || frame.carClass === 'Hypercar';
+    const estFuelLapsLeft = Math.max(0.8, frame.fuelLiters / estBurn);
+    const veBurn = track.lengthKm > 9 ? 11.2 : 7.8;
+    const estVeLapsLeft =
+      lowVeWindow && typeof frame.virtualEnergyPct === 'number'
+        ? Math.max(0.8, frame.virtualEnergyPct / veBurn)
+        : null;
+    const estLapsLeft = estVeLapsLeft !== null ? Math.min(estFuelLapsLeft, estVeLapsLeft) : estFuelLapsLeft;
     const msg =
       protocol === 'pro_terse'
-        ? isHypercar
-          ? `Pit window open (${frame.fuelLiters.toFixed(1)}L) — MFD fuel + VE, repairs OFF.`
+        ? isHypercarClass
+          ? lowVeWindow
+            ? `Pit window open (VE ${Math.round(frame.virtualEnergyPct ?? 0)}%) — MFD fuel + VE, repairs OFF.`
+            : `Pit window open (${frame.fuelLiters.toFixed(1)}L) — MFD fuel + VE, repairs OFF.`
           : `Pit window open (${frame.fuelLiters.toFixed(1)}L) — MFD fuel, repairs OFF.`
-        : isHypercar
-          ? `Pit window open: ${frame.fuelLiters.toFixed(1)} liters remaining (~${estLapsLeft.toFixed(1)} laps). Pre-set MFD fuel + 100% VE, repairs OFF unless damaged, and prep limiter.`
+        : isHypercarClass
+          ? lowVeWindow
+            ? `Pit window open: Virtual Energy at ${Math.round(frame.virtualEnergyPct ?? 0)}% (~${estLapsLeft.toFixed(1)} laps left). Pre-set MFD 100% VE + fuel, repairs OFF unless damaged, and prep pit limiter.`
+            : `Pit window open: ${frame.fuelLiters.toFixed(1)} liters remaining (~${estLapsLeft.toFixed(1)} laps). Pre-set MFD fuel + 100% VE, repairs OFF unless damaged, and prep limiter.`
           : `Pit window open: ${frame.fuelLiters.toFixed(1)} liters remaining (~${estLapsLeft.toFixed(1)} laps). Pre-set MFD fuel, repairs OFF unless damaged, and prep pit limiter.`;
     return {
       callout: makeCallout('strategy', 'warning', 'Pit Window', msg, undefined, 'pit_window'),
@@ -933,7 +1020,7 @@ export function evaluateLiveTelemetry(
     }
   }
 
-  // 6g. Rival gap & closing splits on straights
+  // 6g. Rival gap & winning battle coaching on straights
   if (
     settings.gapSplitsEnabled &&
     !activeCorner &&
@@ -943,27 +1030,38 @@ export function evaluateLiveTelemetry(
     canFire('strategy', 22000, false, 'gap_splits')
   ) {
     const candidate = frame.opponents
-      .filter((o) => !o.isAlongside && Math.abs(o.distanceMeters) > 8 && Math.abs(o.distanceMeters) < 420)
+      .filter((o) => !o.inPits && !o.isAlongside && Math.abs(o.distanceMeters) > 8 && Math.abs(o.distanceMeters) < 420)
       .sort((a, b) => Math.abs(a.gapSeconds) - Math.abs(b.gapSeconds))[0];
     if (candidate) {
       const ahead = candidate.distanceMeters > 0;
-      const trend =
-        Math.abs(candidate.closingSpeedKmh) > 8
-          ? candidate.closingSpeedKmh > 0
-            ? ' (closing)'
-            : ' (pulling clear)'
-          : '';
-      return {
-        callout: makeCallout(
-          'strategy',
-          'info',
-          'Gap Split',
+      const absGap = Math.abs(candidate.gapSeconds);
+      const posLabel = candidate.position ? `P${candidate.position} ` : '';
+      const closingFast = candidate.closingSpeedKmh >= 4;
+      let msg: string;
+      if (ahead && absGap <= 2.2 && closingFast) {
+        msg =
           protocol === 'pro_terse'
-            ? `#${candidate.carNumber} ${ahead ? 'ahead' : 'back'}: ${Math.abs(candidate.gapSeconds).toFixed(1)}s.`
-            : `Gap to #${candidate.carNumber} ${ahead ? 'ahead' : 'behind'}: ${Math.abs(candidate.gapSeconds).toFixed(1)}s${trend}.`,
-          undefined,
-          'gap_splits'
-        ),
+            ? `Closing ${posLabel}#${candidate.carNumber} (+${absGap.toFixed(1)}s) — prep pass.`
+            : `Closing fast on ${posLabel}#${candidate.carNumber} (+${absGap.toFixed(1)}s) — strong pace, carry exit speed and set up the pass next braking zone.`;
+      } else if (!ahead && absGap <= 1.2 && closingFast) {
+        msg =
+          protocol === 'pro_terse'
+            ? `#${candidate.carNumber} ${absGap.toFixed(1)}s back — nail exit.`
+            : `#${candidate.carNumber} is ${absGap.toFixed(1)}s behind and closing — protect the inside on entry and maximize exit drive.`;
+      } else {
+        const trend =
+          Math.abs(candidate.closingSpeedKmh) > 8
+            ? candidate.closingSpeedKmh > 0
+              ? ' (closing)'
+              : ' (pulling clear)'
+            : '';
+        msg =
+          protocol === 'pro_terse'
+            ? `#${candidate.carNumber} ${ahead ? 'ahead' : 'back'}: ${absGap.toFixed(1)}s.`
+            : `Gap to #${candidate.carNumber} ${ahead ? 'ahead' : 'behind'}: ${absGap.toFixed(1)}s${trend}.`;
+      }
+      return {
+        callout: makeCallout('strategy', 'info', 'Gap Split', msg, undefined, 'gap_splits'),
         nextCooldowns,
       };
     }

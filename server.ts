@@ -39,7 +39,13 @@ import {
   normalizeGeminiLiveVoiceName,
   VOICE_PROFILE_DEFS,
 } from './src/engine/lmuKnowledge.ts';
-import type { RadioProtocol, SimSessionType } from './src/types/telemetry.ts';
+import { applyTirePlanToLmuPitMenu } from './src/engine/lmuPitMenu.ts';
+import type {
+  PitMfdSyncRequest,
+  PitMfdSyncStatus,
+  RadioProtocol,
+  SimSessionType,
+} from './src/types/telemetry.ts';
 
 const runtimeDir =
   typeof __dirname !== 'undefined'
@@ -1307,6 +1313,179 @@ async function startServer() {
     return delivered;
   };
 
+  let pendingPitMfdCommand: PitMfdSyncRequest | null = null;
+  let pitMfdSyncStatus: PitMfdSyncStatus = {
+    state: 'idle',
+    lastAttemptAtMs: null,
+    lastAppliedAtMs: null,
+    appliedHeadline: null,
+    via: 'none',
+    message: 'Not yet synced to Le Mans Ultimate Pit MFD.',
+  };
+
+  async function tryLocalLmuPitMenuSync(plan: PitMfdSyncRequest): Promise<{
+    reachable: boolean;
+    ok: boolean;
+    message: string;
+  }> {
+    const bases = ['http://127.0.0.1:6397', 'http://[::1]:6397'];
+    for (const base of bases) {
+      try {
+        const readResp = await fetch(`${base}/rest/garage/PitMenu/receivePitMenu`, {
+          signal: AbortSignal.timeout(900),
+        });
+        if (!readResp.ok) continue;
+        const pitMenuRaw = await readResp.json();
+        const applied = applyTirePlanToLmuPitMenu(pitMenuRaw, plan);
+        if (applied.matchedCategories.length > 0 && applied.changedCount > 0) {
+          const writeResp = await fetch(`${base}/rest/garage/PitMenu/loadPitMenu`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(applied.updatedMenu),
+            signal: AbortSignal.timeout(900),
+          });
+          if (!writeResp.ok) {
+            return {
+              reachable: true,
+              ok: false,
+              message: `LMU :6397 loadPitMenu returned HTTP ${writeResp.status}.`,
+            };
+          }
+        }
+        return { reachable: true, ok: true, message: applied.summary };
+      } catch {
+        // Not reachable on this host/port
+      }
+    }
+    return {
+      reachable: false,
+      ok: false,
+      message: 'LMU WebUI :6397 is not reachable directly from this server.',
+    };
+  }
+
+  app.get('/api/lmu/pit-menu/status', (_req, res) => {
+    res.json({
+      status: pitMfdSyncStatus,
+      pendingCommand: pendingPitMfdCommand,
+    });
+  });
+
+  app.post('/api/lmu/pit-menu/sync', async (req, res) => {
+    const body = (req.body ?? {}) as Partial<PitMfdSyncRequest>;
+    const tireAction =
+      body.tireAction === 'change_all' || body.tireAction === 'change_fronts'
+        ? body.tireAction
+        : 'fuel_only';
+    const tireCompound =
+      body.tireCompound === 'Soft' ||
+      body.tireCompound === 'Hard' ||
+      body.tireCompound === 'Wet'
+        ? body.tireCompound
+        : 'Medium';
+    const repairsRecommended = Boolean(body.repairsRecommended);
+    const pitTireCallHeadline =
+      typeof body.pitTireCallHeadline === 'string' && body.pitTireCallHeadline.trim()
+        ? body.pitTireCallHeadline.trim()
+        : tireAction === 'fuel_only'
+          ? 'Keep Tires (0s)'
+          : tireAction === 'change_fronts'
+            ? `2x Front ${tireCompound}`
+            : `4x ${tireCompound}`;
+
+    const now = Date.now();
+    const request: PitMfdSyncRequest = {
+      requestId: `pit-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      createdAtMs: now,
+      tireAction,
+      tireCompound,
+      repairsRecommended,
+      ...(typeof body.fuelToAddLiters === 'number'
+        ? { fuelToAddLiters: body.fuelToAddLiters }
+        : {}),
+      pitTireCallHeadline,
+    };
+
+    const localResult = await tryLocalLmuPitMenuSync(request);
+    if (localResult.reachable) {
+      pendingPitMfdCommand = null;
+      pitMfdSyncStatus = {
+        state: localResult.ok ? 'applied' : 'error',
+        lastAttemptAtMs: now,
+        lastAppliedAtMs: localResult.ok ? now : pitMfdSyncStatus.lastAppliedAtMs,
+        appliedHeadline: localResult.ok ? pitTireCallHeadline : pitMfdSyncStatus.appliedHeadline,
+        via: 'local-lmu-rest',
+        message: localResult.message,
+      };
+      res.json({ ok: localResult.ok, queued: false, status: pitMfdSyncStatus });
+      return;
+    }
+
+    // If LMU is connected via external Windows bridge script, queue for the bridge to apply locally on :6397
+    const bridgeAlive =
+      currentSimStatus.lastPacketAtMs !== null &&
+      Date.now() - currentSimStatus.lastPacketAtMs < 8000 &&
+      currentSimStatus.simId === 'lmu';
+
+    if (bridgeAlive) {
+      pendingPitMfdCommand = request;
+      pitMfdSyncStatus = {
+        state: 'pending_bridge',
+        lastAttemptAtMs: now,
+        lastAppliedAtMs: pitMfdSyncStatus.lastAppliedAtMs,
+        appliedHeadline: pitMfdSyncStatus.appliedHeadline,
+        via: 'remote-bridge',
+        message: `Queued ${pitTireCallHeadline} for your local LMU bridge to push to :6397.`,
+      };
+      res.json({ ok: true, queued: true, status: pitMfdSyncStatus });
+      return;
+    }
+
+    pendingPitMfdCommand = null;
+    pitMfdSyncStatus = {
+      state: 'sim_offline',
+      lastAttemptAtMs: now,
+      lastAppliedAtMs: pitMfdSyncStatus.lastAppliedAtMs,
+      appliedHeadline: pitMfdSyncStatus.appliedHeadline,
+      via: 'none',
+      message:
+        'Le Mans Ultimate (:6397) not detected on this machine. Run ApexEngineer locally or start 03_START_LMU_BRIDGE.bat while LMU is on track/pit.',
+    };
+    res.json({ ok: false, queued: false, status: pitMfdSyncStatus });
+  });
+
+  app.post('/api/lmu/pit-menu/bridge-result', (req, res) => {
+    const body = (req.body ?? {}) as {
+      requestId?: string;
+      ok?: boolean;
+      appliedHeadline?: string;
+      message?: string;
+    };
+    if (
+      pendingPitMfdCommand &&
+      (!body.requestId || body.requestId === pendingPitMfdCommand.requestId)
+    ) {
+      pendingPitMfdCommand = null;
+    }
+    const now = Date.now();
+    pitMfdSyncStatus = {
+      state: body.ok ? 'applied' : 'error',
+      lastAttemptAtMs: now,
+      lastAppliedAtMs: body.ok ? now : pitMfdSyncStatus.lastAppliedAtMs,
+      appliedHeadline: body.ok
+        ? body.appliedHeadline ?? pitMfdSyncStatus.appliedHeadline
+        : pitMfdSyncStatus.appliedHeadline,
+      via: 'remote-bridge',
+      message:
+        typeof body.message === 'string' && body.message.trim()
+          ? body.message.trim()
+          : body.ok
+            ? 'Pre-selected tires in LMU Pit MFD via local bridge.'
+            : 'Bridge could not update LMU Pit MFD.',
+    };
+    res.json({ ok: true, status: pitMfdSyncStatus });
+  });
+
   // HTTP telemetry ingest endpoint for local LMU/ACC/iRacing bridge scripts
   app.post('/api/telemetry/ingest', (req, res) => {
     const payload = req.body;
@@ -1316,7 +1495,13 @@ async function startServer() {
     }
 
     const delivered = broadcastTelemetryFrame(payload as Record<string, unknown>);
-    res.json({ ok: true, delivered, sessionDetected: lastSessionPayload, simStatus: currentSimStatus });
+    res.json({
+      ok: true,
+      delivered,
+      sessionDetected: lastSessionPayload,
+      simStatus: currentSimStatus,
+      pendingPitMenuSync: pendingPitMfdCommand,
+    });
   });
 
   // Raw native shared-memory buffer ingest (LMU_Data / $LMU_Data$ or $rFactor2SMMP_Telemetry$ + $rFactor2SMMP_Scoring$)
@@ -1412,7 +1597,11 @@ async function startServer() {
         if (client.readyState === WebSocket.OPEN) client.send(sessionMsg);
       }
     }
-    res.json({ ok: true, simStatus: currentSimStatus });
+    res.json({
+      ok: true,
+      simStatus: currentSimStatus,
+      pendingPitMenuSync: pendingPitMfdCommand,
+    });
   });
 
   // Zero-config built-in Le Mans Ultimate local REST API poller (http://127.0.0.1:6397)
@@ -1789,6 +1978,12 @@ async function startServer() {
 
       const lmuSession = parseLmuSessionType(sessionInfo, gameState);
 
+      const lapInvalidated = Boolean(
+        player.lapInvalidated ||
+          player.currentLapInvalid ||
+          player.currentLapValid === false
+      );
+
       broadcastTelemetryFrame({
         timestampMs: now,
         simId: 'lmu',
@@ -1815,6 +2010,7 @@ async function startServer() {
         ...(virtualEnergyPct !== undefined ? { virtualEnergyPct } : {}),
         ...(inFormationLap ? { inFormationLap: true } : {}),
         ...(penaltyActive ? { penaltyActive: true } : {}),
+        ...(lapInvalidated ? { lapInvalidated: true } : {}),
         tireTempC: { fl: 84, fr: 84, rl: 82, rr: 82 },
         tirePressurePsi: { fl: 26.4, fr: 26.4, rl: 26.1, rr: 26.1 },
         tireWearPct: { fl: 98, fr: 98, rl: 98, rr: 98 },
@@ -2022,6 +2218,12 @@ async function startServer() {
               ? rawSessionCandidate.trim()
               : undefined;
 
+          const rawUdpVe = pickNum(parsed, ['virtualEnergyPct', 'virtualEnergy', 'virtualEnergyFraction'], -1);
+          const udpVirtualEnergyPct =
+            rawUdpVe >= 0
+              ? Math.max(0, Math.min(100, Math.round((rawUdpVe <= 1.05 ? rawUdpVe * 100 : rawUdpVe) * 10) / 10))
+              : undefined;
+
           broadcastTelemetryFrame({
             timestampMs: now,
             simId: pickStr(parsed, ['simId', 'simName', 'game', 'GameName']) || 'lmu',
@@ -2045,6 +2247,14 @@ async function startServer() {
             longG: pickNum(parsed, ['longG', 'LongG'], 0),
             deltaSec: pickNum(parsed, ['deltaSec', 'DeltaSec'], 0),
             fuelLiters: pickNum(parsed, ['fuelLiters', 'mFuel', 'Fuel'], 50),
+            ...(udpVirtualEnergyPct !== undefined ? { virtualEnergyPct: udpVirtualEnergyPct } : {}),
+            ...(parsed.inFormationLap ? { inFormationLap: true } : {}),
+            ...(parsed.penaltyActive ? { penaltyActive: true } : {}),
+            ...(parsed.lapInvalidated ? { lapInvalidated: true } : {}),
+            ...(parsed.flatTire ? { flatTire: true } : {}),
+            ...(parsed.wheelDetached ? { wheelDetached: true } : {}),
+            ...(parsed.inPitOrGarage !== undefined ? { inPitOrGarage: Boolean(parsed.inPitOrGarage) } : {}),
+            ...(parsed.isPaused !== undefined ? { isPaused: Boolean(parsed.isPaused) } : {}),
             tireTempC: parsed.tireTempC ?? { fl: 85, fr: 85, rl: 83, rr: 83 },
             tirePressurePsi: parsed.tirePressurePsi ?? { fl: 26.5, fr: 26.5, rl: 26.2, rr: 26.2 },
             tireWearPct: parsed.tireWearPct ?? { fl: 98, fr: 98, rl: 98, rr: 98 },
@@ -2231,6 +2441,7 @@ import dgram from 'node:dgram';
 const UDP_PORT = Number(process.env.SIM_UDP_PORT || 5606);
 const TARGET_ENDPOINT = process.env.APEX_ENDPOINT || '${ingestUrl}';
 const STATUS_ENDPOINT = TARGET_ENDPOINT.replace(/\\/api\\/telemetry\\/ingest$/, '/api/sim/status');
+const BRIDGE_RESULT_ENDPOINT = TARGET_ENDPOINT.replace(/\\/api\\/telemetry\\/ingest$/, '/api/lmu/pit-menu/bridge-result');
 const LMU_BASES = ['http://127.0.0.1:6397', 'http://[::1]:6397'];
 
 const socket = dgram.createSocket('udp4');
@@ -2239,6 +2450,99 @@ let lastUdpMs = 0;
 let activeLmuBase = null;
 let lastSpeedKmh = 0;
 let lastSpeedMs = 0;
+let lastHandledPitReqId = null;
+
+function applyTirePlanLocal(pitMenuRaw, plan) {
+  const wrapperKey = Array.isArray(pitMenuRaw) ? null : (Array.isArray(pitMenuRaw?.pitMenu) ? 'pitMenu' : (Array.isArray(pitMenuRaw?.items) ? 'items' : null));
+  const list = Array.isArray(pitMenuRaw) ? pitMenuRaw : (wrapperKey ? pitMenuRaw[wrapperKey] : null);
+  if (!Array.isArray(list)) return { updatedMenu: pitMenuRaw, changedCount: 0, matched: [] };
+  let changedCount = 0;
+  const matched = [];
+  const nextList = list.map((rawCat) => {
+    if (!rawCat || typeof rawCat !== 'object') return rawCat;
+    const cat = { ...rawCat };
+    const name = String(cat.name || cat.pmcName || cat.category || '').trim();
+    const opts = Array.isArray(cat.settings) ? cat.settings : (Array.isArray(cat.options) ? cat.options : null);
+    if (!opts || /brake/i.test(name)) return cat;
+    const getText = (o) => typeof o === 'string' ? o.trim() : String(o?.text ?? o?.name ?? o?.label ?? o?.value ?? '').trim();
+    if (/(t[iy]re)/i.test(name)) {
+      const isRear = /\\b(rl|rr|rear|lr|back)\\b/i.test(name) || /^(rl|rr|rear)/i.test(name);
+      const wantKeep = plan.tireAction === 'fuel_only' || (plan.tireAction === 'change_fronts' && isRear);
+      const rx = wantKeep ? /^(no\\s*change|none|keep|don'?t\\s*change)/i : new RegExp('\\\\b' + plan.tireCompound + '\\\\b', 'i');
+      const idx = opts.findIndex((o) => rx.test(getText(o)));
+      if (idx >= 0) {
+        matched.push(name);
+        if (cat.currentSetting !== idx) { cat.currentSetting = idx; changedCount++; }
+      }
+      return cat;
+    }
+    if (/\\b(repair|damage|body)\\b/i.test(name)) {
+      let idx = -1;
+      if (plan.repairsRecommended) {
+        idx = opts.findIndex((o) => {
+          const t = getText(o);
+          return !/^(do\\s*not|no\\s*repair|none|off)/i.test(t) && /(repair\\s*all|\\ball\\b|full)/i.test(t);
+        });
+        if (idx < 0) {
+          idx = opts.findIndex((o) => {
+            const t = getText(o);
+            return !/^(do\\s*not|no\\s*repair|none|off)/i.test(t) && /(body|yes|on)/i.test(t);
+          });
+        }
+      } else {
+        idx = opts.findIndex((o) => /^(do\\s*not|no\\s*repair|none|off)/i.test(getText(o)));
+      }
+      if (idx >= 0) {
+        matched.push(name);
+        if (cat.currentSetting !== idx) { cat.currentSetting = idx; changedCount++; }
+      }
+      return cat;
+    }
+    return cat;
+  });
+  return { updatedMenu: wrapperKey ? { ...pitMenuRaw, [wrapperKey]: nextList } : nextList, changedCount, matched };
+}
+
+async function handlePendingPitMenuSync(cmd) {
+  if (!cmd || !cmd.requestId || cmd.requestId === lastHandledPitReqId) return;
+  lastHandledPitReqId = cmd.requestId;
+  const base = activeLmuBase || LMU_BASES[0];
+  try {
+    const r = await fetch(base + '/rest/garage/PitMenu/receivePitMenu', { signal: AbortSignal.timeout(900) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const menu = await r.json();
+    const res = applyTirePlanLocal(menu, cmd);
+    if (res.matched.length > 0 && res.changedCount > 0) {
+      const w = await fetch(base + '/rest/garage/PitMenu/loadPitMenu', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(res.updatedMenu),
+        signal: AbortSignal.timeout(900),
+      });
+      if (!w.ok) throw new Error('loadPitMenu HTTP ' + w.status);
+    }
+    await fetch(BRIDGE_RESULT_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId: cmd.requestId,
+        ok: true,
+        appliedHeadline: cmd.pitTireCallHeadline,
+        message: 'Pre-selected ' + cmd.pitTireCallHeadline + (cmd.repairsRecommended ? ' + Repairs ON' : '') + ' in LMU Pit MFD.',
+      }),
+    }).catch(() => {});
+  } catch (err) {
+    await fetch(BRIDGE_RESULT_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId: cmd.requestId,
+        ok: false,
+        message: 'LMU PitMenu unavailable: ' + (err?.message || String(err)),
+      }),
+    }).catch(() => {});
+  }
+}
 
 function pickString(obj, keys) {
   for (const k of keys) {
@@ -2296,7 +2600,7 @@ async function pollLmuRest() {
   const player = vehicles.find((v) => v.player || v.focus || v.isPlayer) || (vehicles.length === 1 ? vehicles[0] : null);
 
   if (!player) {
-    await fetch(STATUS_ENDPOINT, {
+    const stResp = await fetch(STATUS_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2308,7 +2612,11 @@ async function pollLmuRest() {
         telemetryQuality: 'partial_rest',
         rawTrackName: trackName || null,
       }),
-    }).catch(() => {});
+    }).catch(() => null);
+    if (stResp?.ok) {
+      const stJson = await stResp.json().catch(() => null);
+      if (stJson?.pendingPitMenuSync) await handlePendingPitMenuSync(stJson.pendingPitMenuSync);
+    }
     return 1000;
   }
 
@@ -2339,7 +2647,7 @@ async function pollLmuRest() {
           ? 'practice'
           : 'unknown';
 
-  await fetch(TARGET_ENDPOINT, {
+  const ingResp = await fetch(TARGET_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -2382,7 +2690,11 @@ async function pollLmuRest() {
       telemetrySource: 'lmu-rest',
       sensorCaps: { pedals: false, tires: false, brakes: false, rpmGear: false },
     }),
-  }).catch(() => {});
+  }).catch(() => null);
+  if (ingResp?.ok) {
+    const ingJson = await ingResp.json().catch(() => null);
+    if (ingJson?.pendingPitMenuSync) await handlePendingPitMenuSync(ingJson.pendingPitMenuSync);
+  }
   return 220;
 }
 

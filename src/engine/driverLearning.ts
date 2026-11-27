@@ -189,6 +189,7 @@ export function buildAdaptiveElectronicsSuggestions(
 
 export interface PitStrategyOptions {
   autoSelectPitTires?: boolean;
+  preselectPitTiresInLmu?: boolean;
   pitRaceMode?: PitRaceMode;
   pitTireOverride?: PitTireOverride;
   sessionType?: SimSessionType;
@@ -350,13 +351,22 @@ export function computePitStrategy(
     0.4,
     Math.round((frame.fuelLiters / fuelBurnPerLapLiters) * 10) / 10
   );
+  const isHypercar = car.carClass === 'Hypercar' || frame.carClass === 'Hypercar';
+  const veBurnPctPerLap = track.lengthKm > 9 ? 11.2 : 7.8;
+  const lapsOfVeLeft =
+    isHypercar && typeof frame.virtualEnergyPct === 'number' && Number.isFinite(frame.virtualEnergyPct)
+      ? Math.max(0.3, Math.round((frame.virtualEnergyPct / veBurnPctPerLap) * 10) / 10)
+      : undefined;
+  const effectiveStintLapsLeft =
+    lapsOfVeLeft !== undefined ? Math.min(lapsOfFuelLeft, lapsOfVeLeft) : lapsOfFuelLeft;
+
   const remainingRaceLaps = Math.max(
     1,
     effectiveRaceLengthLaps - frame.lapNumber + (1 - frame.lapDistPct)
   );
 
-  // Pit at least 1 lap before running dry, or THIS lap immediately if crash/damage detected
-  const maxPitLap = frame.lapNumber + Math.max(1, Math.floor(lapsOfFuelLeft - 0.8));
+  // Pit at least 1 lap before running dry on fuel OR Virtual Energy (0% VE = 100s Stop-and-Go), or THIS lap if crash/damage
+  const maxPitLap = frame.lapNumber + Math.max(1, Math.floor(effectiveStintLapsLeft - 0.8));
   const plannedPitLap = Math.min(effectiveRaceLengthLaps - 1, maxPitLap);
   const recommendedPitLap = crashAlertActive ? frame.lapNumber : plannedPitLap;
 
@@ -549,9 +559,19 @@ export function computePitStrategy(
         : 'Keep Tires (0s)';
 
   const repairsRecommended = crashAlertActive;
+  const veLimitingStint = lapsOfVeLeft !== undefined && lapsOfVeLeft < lapsOfFuelLeft;
+  const stintLimitingFactor: PitStrategyPlan['stintLimitingFactor'] = crashAlertActive
+    ? 'damage'
+    : veLimitingStint && lapsOfVeLeft <= remainingRaceLaps + 1
+      ? 'virtual_energy'
+      : lapsOfFuelLeft <= remainingRaceLaps + 1
+        ? 'fuel'
+        : tireAction !== 'fuel_only'
+          ? 'tires'
+          : 'none';
   const pitCallUrgency: PitStrategyPlan['pitCallUrgency'] = crashAlertActive
     ? 'box_now_damage'
-    : lapsOfFuelLeft <= remainingRaceLaps + 1 || tireAction !== 'fuel_only'
+    : effectiveStintLapsLeft <= remainingRaceLaps + 1 || tireAction !== 'fuel_only'
       ? 'planned'
       : 'none';
 
@@ -577,7 +597,7 @@ export function computePitStrategy(
     (tireAction === 'change_all' ? 12 : tireAction === 'change_fronts' ? 7 : 0);
 
   const veClause =
-    car.carClass === 'Hypercar' && typeof frame.virtualEnergyPct === 'number'
+    isHypercar && typeof frame.virtualEnergyPct === 'number'
       ? ` & VE ${Math.round(frame.virtualEnergyPct)}%`
       : '';
   const tireLabel =
@@ -589,24 +609,27 @@ export function computePitStrategy(
 
   const mfdChecklist = [
     `Request Pit: Press your Pit Request button before pit entry`,
-    `Fuel MFD: ${fuelToAddLiters > 0 ? `+${fuelToAddLiters.toFixed(0)} L` : '0 L (No refuel)'}${car.carClass === 'Hypercar' ? ' + 100% VE' : ''}`,
+    `Fuel MFD: ${fuelToAddLiters > 0 ? `+${fuelToAddLiters.toFixed(0)} L` : '0 L (No refuel)'}${isHypercar ? ' + 100% VE' : ''}`,
     `Tires MFD (${tireAutoSelected ? 'Auto Plan' : 'Manual'}): ${pitTireCallHeadline}`,
     repairsRecommended
       ? 'Repairs MFD: ON — Fix Aero & Suspension Damage'
       : 'Repairs MFD: OFF unless steering or aero damaged',
-    'Pit Entry: Engage Pit Limiter before white line',
+    'Pit Entry: Engage Pit Limiter (60 km/h) before white line',
   ];
 
-  const controlModeNote =
-    'Read-only Pit MFD advisor (100% RaceControl legal) — confirm these picks in LMU Pit MFD or wheel macros; app never injects game inputs.';
+  const controlModeNote = options?.preselectPitTiresInLmu
+    ? 'LMU Pit MFD Preselect ON (:6397 REST): Tires & repairs are pre-selected automatically. Press Pit Request and engage Pit Limiter on entry.'
+    : 'Read-only Pit MFD advisor (100% RaceControl legal) — confirm these picks in LMU Pit MFD or enable Preselect in LMU; app never injects steering/pedal inputs.';
 
   const engineerSummary = crashAlertActive
     ? `BOX THIS LAP (${raceModeLabel}): Set Repairs ON, ${pitTireCallHeadline}${fuelToAddLiters > 0 ? `, +${fuelToAddLiters.toFixed(0)}L` : ''} in LMU Pit MFD.`
     : resolvedRaceMode === 'practice_quali'
       ? `${raceModeLabel} plan: ${pitTireCallHeadline}, ${fuelToAddLiters.toFixed(0)}L run fuel, repairs OFF unless damaged.`
-      : lapsOfFuelLeft >= remainingRaceLaps && tireAction === 'fuel_only'
-        ? `Fuel${veClause} good to flag (${lapsOfFuelLeft.toFixed(1)} laps left). No pit stop needed — keep current tires.`
-        : `MFD Box Lap ${recommendedPitLap} (${raceModeLabel}): ${fuelToAddLiters.toFixed(0)}L${car.carClass === 'Hypercar' ? ' + 100% VE' : ''}, ${tireLabel}, repairs OFF unless damaged.`;
+      : effectiveStintLapsLeft >= remainingRaceLaps && tireAction === 'fuel_only'
+        ? `Fuel${veClause} good to flag (${effectiveStintLapsLeft.toFixed(1)} laps left). No pit stop needed — keep current tires.`
+        : veLimitingStint && lapsOfVeLeft !== undefined
+          ? `MFD Box Lap ${recommendedPitLap} (${raceModeLabel}): VE ${Math.round(frame.virtualEnergyPct ?? 0)}% limits stint (~${lapsOfVeLeft.toFixed(1)} laps). Set 100% VE + ${fuelToAddLiters.toFixed(0)}L, ${tireLabel}, repairs OFF.`
+          : `MFD Box Lap ${recommendedPitLap} (${raceModeLabel}): ${fuelToAddLiters.toFixed(0)}L${isHypercar ? ' + 100% VE' : ''}, ${tireLabel}, repairs OFF unless damaged.`;
 
   return {
     raceLengthLaps: effectiveRaceLengthLaps,
@@ -614,6 +637,8 @@ export function computePitStrategy(
     fuelRemainingLiters: frame.fuelLiters,
     fuelBurnPerLapLiters,
     lapsOfFuelLeft,
+    ...(lapsOfVeLeft !== undefined ? { lapsOfVeLeft } : {}),
+    stintLimitingFactor,
     recommendedPitLap,
     fuelToAddLiters,
     tireAction,

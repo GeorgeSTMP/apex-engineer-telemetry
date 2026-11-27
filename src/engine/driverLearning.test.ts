@@ -541,6 +541,39 @@ test('computePitStrategy switches to BOX NOW with Repairs ON and fresh tires on 
   assert.match(detachedQualiPlan.crashReason ?? '', /Detached wheel/i);
 });
 
+test('computePitStrategy factors Hypercar Virtual Energy depletion and Preselect in LMU mode accurately', () => {
+  const track = TRACKS[0]; // Le Mans
+  const car = CARS[0]; // Hypercar
+  const pro = createDefaultDriverProfile(false);
+
+  // Plenty of physical fuel (60L -> ~10.3 laps), but VE at 20% (~1.8 laps) forces immediate earlier pit lap!
+  const veLimitedPlan = computePitStrategy(
+    makeDummyFrame({
+      lapNumber: 4,
+      fuelLiters: 60,
+      virtualEnergyPct: 20,
+      sessionType: 'race',
+    }),
+    track,
+    car,
+    pro,
+    car.defaultSetup,
+    16,
+    {
+      autoSelectPitTires: true,
+      preselectPitTiresInLmu: true,
+      sessionType: 'race',
+    }
+  );
+
+  assert.equal(veLimitedPlan.stintLimitingFactor, 'virtual_energy');
+  assert.ok(typeof veLimitedPlan.lapsOfVeLeft === 'number' && veLimitedPlan.lapsOfVeLeft < 3);
+  assert.ok(veLimitedPlan.recommendedPitLap <= 6, `Expected VE-limited pit lap <= 6, got ${veLimitedPlan.recommendedPitLap}`);
+  assert.match(veLimitedPlan.engineerSummary, /VE 20% limits stint/i);
+  assert.match(veLimitedPlan.controlModeNote, /LMU Pit MFD Preselect ON/i);
+});
+
+
 
 
 

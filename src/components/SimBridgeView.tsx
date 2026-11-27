@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Download, Radio, Sliders, Cpu, Settings, Volume2, RotateCcw } from 'lucide-react';
+import { Download, Radio, Sliders, Cpu, RotateCcw } from 'lucide-react';
 import type {
   CarProfile,
   CoachSettings,
@@ -11,7 +11,6 @@ import type {
 } from '../types/telemetry';
 import { SIM_GAMES } from '../data/circuitsAndCars';
 import type { AutoDetectedSession } from '../engine/autoDetect';
-import { RADIO_MODULE_CATALOG, getEnabledModulesForPatch } from '../engine/engineerPresets';
 import type { SessionPhaseOverride } from '../engine/sessionPhase';
 import type { SimScenarioFault } from '../engine/telemetrySimulator';
 
@@ -973,6 +972,8 @@ export function SimBridgeView({
                       { id: 'degraded_tires', label: 'Worn Tires', testid: 'sim-degraded-tires-btn' },
                       { id: 'brake_overheat', label: 'Brake Overheat', testid: 'sim-brake-overheat-btn' },
                       { id: 'low_fuel', label: 'Low Fuel', testid: 'sim-low-fuel-btn' },
+                      { id: 'formation_lap', label: 'Formation Lap', testid: 'sim-formation-lap-btn' },
+                      { id: 'pit_speeding', label: 'Pit Speeding', testid: 'sim-pit-speeding-btn', tone: 'rose' },
                     ].map((btn) => (
                       <button
                         key={btn.id}
@@ -1034,55 +1035,6 @@ export function SimBridgeView({
           </div>
         </section>
       )}
-
-      {/* Bottom 12 Columns: Concise Race Engineer Summary + Quick Launch to Settings Modal */}
-      <section
-        className="rounded-lg border border-[#1B2230] bg-[#10141D] p-5 lg:col-span-12"
-        data-testid="bridge-engineer-summary"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h2 className="font-display text-base font-bold text-slate-100">
-              Race Engineer Audio, Alerts &amp; Coaching Profiles
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-400">
-              {settings.voiceEnabled
-                ? `Voice ON (${settings.useGeminiTts ? `Gemini HD · ${settings.geminiVoiceName}` : 'Browser Speech'})`
-                : 'Voice Muted'}{' '}
-              · {getEnabledModulesForPatch(settings).length}/{RADIO_MODULE_CATALOG.length} alert channels active ·{' '}
-              Min speak gap {settings.minSpeakIntervalSec}s · Focus:{' '}
-              {settings.focusMode === 'all'
-                ? 'All Areas'
-                : settings.focusMode === 'braking'
-                  ? 'Braking'
-                  : settings.focusMode === 'apex_line'
-                    ? 'Apex Line'
-                    : 'Exit Traction'}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={onTestCallout}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[#273145] bg-[#090B10] px-3 py-2 text-xs font-medium text-slate-200 hover:border-cyan-500/50 hover:text-cyan-200 cursor-pointer whitespace-nowrap"
-            >
-              <Volume2 className="h-3.5 w-3.5 text-cyan-400" aria-hidden="true" />
-              <span>Test Voice</span>
-            </button>
-            {onOpenSettings && (
-              <button
-                type="button"
-                onClick={onOpenSettings}
-                data-testid="bridge-open-settings-btn"
-                className="inline-flex items-center gap-1.5 rounded-md bg-cyan-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 cursor-pointer whitespace-nowrap"
-              >
-                <Settings className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Open Engineer Settings</span>
-              </button>
-            )}
-          </div>
-        </div>
-      </section>
     </div>
   );
 }

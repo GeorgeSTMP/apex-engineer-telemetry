@@ -23,7 +23,9 @@ export type SimScenarioFault =
   | 'attack_chance'
   | 'side_by_side'
   | 'side_by_side_right'
-  | 'self_crash';
+  | 'self_crash'
+  | 'formation_lap'
+  | 'pit_speeding';
 
 export interface SimDriverOverrides {
   activeFault: SimScenarioFault;
@@ -171,6 +173,19 @@ export function stepTelemetrySimulation(
       flagState = 'yellow';
       break;
     }
+    case 'formation_lap': {
+      speedKmh = 95;
+      throttle = 0.32;
+      brake = 0.08;
+      tireTempOffset = -32;
+      break;
+    }
+    case 'pit_speeding': {
+      speedKmh = 78;
+      throttle = 0.25;
+      brake = 0;
+      break;
+    }
     default: {
       const wobble = Math.sin(nextPct * Math.PI * 16) * 2.2;
       speedKmh = Math.max(50, Math.min(car.topSpeedKmh, ref.speedKmh + wobble));
@@ -254,6 +269,14 @@ export function stepTelemetrySimulation(
           rl: Math.max(45, Math.round((prev.tireWearPct.rl - 0.0015) * 100) / 100),
           rr: Math.max(45, Math.round((prev.tireWearPct.rr - 0.0015) * 100) / 100),
         };
+  const prevVe = typeof prev.virtualEnergyPct === 'number' ? prev.virtualEnergyPct : 92;
+  const virtualEnergyPct =
+    car.carClass === 'Hypercar'
+      ? overrides.activeFault === 'low_fuel'
+        ? Math.min(prevVe, 11)
+        : Math.max(4, Math.round((prevVe - 0.012) * 100) / 100)
+      : undefined;
+
   const frame: TelemetryFrame = {
     timestampMs: prev.timestampMs + dtMs,
     lapNumber,
@@ -276,6 +299,7 @@ export function stepTelemetrySimulation(
       overrides.activeFault === 'low_fuel'
         ? Math.min(prev.fuelLiters, 4.8)
         : Math.max(2.5, Math.round((prev.fuelLiters - 0.006) * 100) / 100),
+    ...(virtualEnergyPct !== undefined ? { virtualEnergyPct } : {}),
     tireTempC: {
       fl: Math.round((baseTire + 2.4) * 10) / 10,
       fr: Math.round((baseTire + 1.1) * 10) / 10,
@@ -307,6 +331,8 @@ export function stepTelemetrySimulation(
     hazardDistanceM,
     hazardDescription,
     flagState,
+    ...(overrides.activeFault === 'formation_lap' ? { inFormationLap: true } : {}),
+    ...(overrides.activeFault === 'pit_speeding' ? { inPitOrGarage: true } : {}),
     opponents: nextOpponents,
   };
 

@@ -38,10 +38,10 @@ const SIZE_OPTIONS: Array<{ id: PitWallMapSize; short: string; label: string }> 
 ];
 
 const MAP_CONTAINER_HEIGHT: Record<PitWallMapSize, string> = {
-  compact: 'h-[205px]',
-  standard: 'h-[285px]',
-  large: 'h-[390px]',
-  full: 'h-[510px]',
+  compact: 'h-[168px]',
+  standard: 'h-[212px]',
+  large: 'h-[310px]',
+  full: 'h-[420px]',
 };
 
 function getCarMarkerPalette(tracked: PitWallTrackedCar): {
@@ -587,7 +587,7 @@ export function PitWallTrackMap({
         </svg>
 
         {/* Compact Unboxed Legend Overlay (bottom-left of radar canvas) */}
-        <div className="pointer-events-none absolute bottom-2 left-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-slate-400">
+        <div className="pointer-events-none absolute bottom-2 left-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded bg-[#090B10]/85 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
           <span className="text-cyan-300">▸ YOU</span>
           <span className="text-orange-400">▸ HY</span>
           <span className="text-blue-400">▸ P2</span>
@@ -605,7 +605,7 @@ export function PitWallTrackMap({
           data-expanded={detailsExpanded ? 'true' : 'false'}
         >
           {/* Persistent Top Summary Bar (stays anchored whether minimal or expanded) */}
-          <div className="flex items-start justify-between gap-2 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 text-xs">
             {detailsExpanded ? (
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
@@ -653,7 +653,7 @@ export function PitWallTrackMap({
               </div>
             ) : (
               <div
-                className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[11px] tabular-nums py-0.5"
+                className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[11px] tabular-nums py-0.5"
                 data-testid="selected-car-minimal-summary"
               >
                 <Crosshair className="h-3.5 w-3.5 shrink-0 text-cyan-400" aria-hidden="true" />
@@ -664,11 +664,11 @@ export function PitWallTrackMap({
                   <span className="text-cyan-300 shrink-0">P{selectedCar.position}</span>
                 )}
                 <span className="text-slate-600 shrink-0" aria-hidden="true">·</span>
-                <span className="truncate text-slate-300">
+                <span className="min-w-0 truncate text-slate-300">
                   S{selectedCar.location.sector} · {selectedCar.location.zoneLabel}
                 </span>
                 <span className="text-slate-600 shrink-0" aria-hidden="true">·</span>
-                <span className="text-slate-100 shrink-0">{selectedCar.speedKmh} km/h</span>
+                <span className="text-slate-100 shrink-0 whitespace-nowrap">{selectedCar.speedKmh} km/h</span>
                 {!selectedCar.isPlayer && (
                   <>
                     <span className="hidden sm:inline text-slate-600 shrink-0" aria-hidden="true">·</span>
@@ -684,7 +684,7 @@ export function PitWallTrackMap({
               <button
                 type="button"
                 onClick={() => setViewMode((m) => (m === 'follow' ? 'circuit' : 'follow'))}
-                className="inline-flex items-center gap-1 rounded border border-[#273145] bg-[#090B10] px-2.5 py-1 text-[10px] text-slate-300 hover:border-cyan-500/50 hover:text-cyan-200 cursor-pointer whitespace-nowrap"
+                className="inline-flex items-center gap-1 rounded border border-[#273145] bg-[#090B10] px-2 py-1 text-[10px] text-slate-300 hover:border-cyan-500/50 hover:text-cyan-200 cursor-pointer whitespace-nowrap"
               >
                 <Navigation className="h-2.5 w-2.5" aria-hidden="true" />
                 <span>{viewMode === 'follow' ? 'Full View' : 'Zoom Car'}</span>

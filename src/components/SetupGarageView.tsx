@@ -12,9 +12,8 @@ import type {
   DriverSetupIntake,
   HandlingSymptom,
   LmuPresetRecommendation,
-  PitRaceMode,
+  PitMfdSyncStatus,
   PitStrategyPlan,
-  PitTireOverride,
   SimGameId,
   StintObjective,
   TelemetryFrame,
@@ -49,6 +48,9 @@ interface SetupGarageViewProps {
   onUpdateSetupIntake: (patch: Partial<DriverSetupIntake>) => void;
   onUpdateSettings?: (patch: Partial<CoachSettings>) => void;
   onDismissCrashAlert?: () => void;
+  pitMfdSyncStatus?: PitMfdSyncStatus;
+  onSyncPitMenuToLmu?: () => void;
+  onOpenPitWall?: () => void;
 }
 
 const TRACK_CONDITIONS: Array<{ id: TrackCondition; label: string }> = [
@@ -86,7 +88,6 @@ export function SetupGarageView({
   setup,
   driverProfile,
   setupIntake,
-  settings,
   pitStrategy,
   cornerComparisons,
   latestFrame,
@@ -94,8 +95,10 @@ export function SetupGarageView({
   onUpdateSetup,
   onResetSetup,
   onUpdateSetupIntake,
-  onUpdateSettings,
   onDismissCrashAlert,
+  pitMfdSyncStatus,
+  onSyncPitMenuToLmu,
+  onOpenPitWall,
 }: SetupGarageViewProps) {
   const [aiAdvice, setAiAdvice] = useState<string | null>(null);
   const [aiStructured, setAiStructured] = useState<AiSetupAdviceStructured | null>(null);
@@ -654,40 +657,44 @@ export function SetupGarageView({
           )}
         </section>
 
-        {/* Pit Strategy & Auto-Tire MFD Plan */}
+        {/* Concise Pit Plan Readout (configured on Pit Wall) */}
         <section className="rounded-lg border border-[#1B2230] bg-[#10141D] p-5" data-testid="garage-pit-strategy-card">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-display text-sm font-semibold text-slate-100">
-              Pit Stop Strategy &amp; Auto Tire Plan
-            </h2>
-            {settings && onUpdateSettings && (
-              <button
-                type="button"
-                data-testid="garage-auto-pit-tires-toggle"
-                title="Auto-calculate the best tire strategy for your LMU Pit MFD checklist (read-only advisor; never clicks inside LMU)."
-                onClick={() =>
-                  onUpdateSettings({
-                    autoSelectPitTires: !(settings.autoSelectPitTires ?? true),
-                  })
-                }
-                className={`rounded border px-2.5 py-1 font-mono text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                  (settings.autoSelectPitTires ?? true)
-                    ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200'
-                    : 'border-[#273145] bg-[#090B10] text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                Auto Tire Plan: {(settings.autoSelectPitTires ?? true) ? 'ON' : 'OFF'}
-              </button>
-            )}
+            <div>
+              <h2 className="font-display text-sm font-semibold text-slate-100">
+                Active Pit Plan Summary
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-400">
+                {pitStrategy.sessionPhaseDetectedLabel} · {pitStrategy.raceModeLabel} · {car.name}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {onSyncPitMenuToLmu && (
+                <button
+                  type="button"
+                  data-testid="garage-sync-lmu-mfd-btn"
+                  onClick={onSyncPitMenuToLmu}
+                  className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 font-mono text-[11px] font-medium text-cyan-200 hover:bg-cyan-500/20 cursor-pointer whitespace-nowrap"
+                >
+                  Sync MFD Now
+                </button>
+              )}
+              {onOpenPitWall && (
+                <button
+                  type="button"
+                  onClick={onOpenPitWall}
+                  className="rounded border border-[#273145] bg-[#090B10] px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200 cursor-pointer whitespace-nowrap"
+                >
+                  Configure on Pit Wall →
+                </button>
+              )}
+            </div>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            {pitStrategy.sessionPhaseDetectedLabel} · {pitStrategy.raceModeLabel} · {driverProfile.isNewToGame ? 'Newcomer Consistency' : `${driverProfile.skillTier} Pace`} on {track.name}.
-          </p>
 
           {pitStrategy.crashAlertActive && (
             <div
               role="alert"
-              className="mt-2.5 flex items-start justify-between gap-2 rounded border border-rose-500/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+              className="mt-3 flex items-start justify-between gap-2 rounded border border-rose-500/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
             >
               <div>
                 <div className="font-mono text-[11px] font-semibold uppercase text-rose-300">
@@ -707,43 +714,19 @@ export function SetupGarageView({
             </div>
           )}
 
-          {settings && onUpdateSettings && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              <select
-                aria-label="Pit game mode"
-                data-testid="garage-pit-race-mode-select"
-                value={settings.pitRaceMode ?? 'auto'}
-                onChange={(e) =>
-                  onUpdateSettings({ pitRaceMode: e.target.value as PitRaceMode })
-                }
-                className="h-8 flex-1 min-w-[160px] rounded border border-[#273145] bg-[#090B10] px-2.5 text-xs text-slate-100 focus:border-cyan-500 focus:outline-none"
-              >
-                <option value="auto">Mode: Auto ({pitStrategy.raceModeLabel})</option>
-                <option value="short_online">Short Online / Beginner Race</option>
-                <option value="standard_online">Normal Online Race</option>
-                <option value="endurance">Endurance Stint (2h+)</option>
-                <option value="practice_quali">Practice / Qualifying</option>
-              </select>
-
-              {!(settings.autoSelectPitTires ?? true) && (
-                <select
-                  aria-label="Manual pit tire override"
-                  value={settings.pitTireOverride ?? 'auto'}
-                  onChange={(e) =>
-                    onUpdateSettings({ pitTireOverride: e.target.value as PitTireOverride })
-                  }
-                  className="h-8 rounded border border-[#273145] bg-[#090B10] px-2.5 text-xs text-slate-100 focus:border-cyan-500 focus:outline-none"
-                >
-                  <option value="auto">Use Recommended</option>
-                  <option value="keep">Keep Tires (0s)</option>
-                  <option value="fronts_medium">2x Fronts Medium (~7s)</option>
-                  <option value="all_medium">4x Medium</option>
-                  <option value="all_soft">4x Soft</option>
-                  <option value="all_hard">4x Hard</option>
-                  <option value="all_wet">4x Wet</option>
-                </select>
-              )}
-            </div>
+          {pitMfdSyncStatus && pitMfdSyncStatus.state !== 'idle' && (
+            <p
+              data-testid="garage-lmu-mfd-sync-status"
+              className={`mt-2 font-mono text-[11px] ${
+                pitMfdSyncStatus.state === 'applied'
+                  ? 'text-emerald-400'
+                  : pitMfdSyncStatus.state === 'error'
+                    ? 'text-rose-400'
+                    : 'text-amber-300'
+              }`}
+            >
+              {pitMfdSyncStatus.message}
+            </p>
           )}
 
           <div className="mt-3 grid grid-cols-4 gap-2 rounded-md border border-[#1B2230] bg-[#090B10] p-3 font-mono tabular-nums">
@@ -766,14 +749,7 @@ export function SetupGarageView({
               <div className="text-xs sm:text-sm font-semibold text-slate-100">{pitStrategy.pitStopDurationEstSec}s</div>
             </div>
           </div>
-
-          <p className="mt-2.5 text-xs text-slate-200">{pitStrategy.tireSelectionReason}</p>
-          <div className="mt-2.5 divide-y divide-[#1B2230] border-t border-[#1B2230] pt-1.5 font-mono text-[11px] text-slate-400">
-            {pitStrategy.mfdChecklist.map((line, idx) => (
-              <div key={idx} className="py-1">{line}</div>
-            ))}
-          </div>
-          <p className="mt-2 text-[10px] text-slate-500">{pitStrategy.controlModeNote}</p>
+          <p className="mt-2 text-xs text-slate-300">{pitStrategy.tireSelectionReason}</p>
         </section>
       </div>
 

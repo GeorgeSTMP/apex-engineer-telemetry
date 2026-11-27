@@ -76,6 +76,7 @@ import type {
   HardwareInputMapping,
   HardwareInputState,
   LapRecord,
+  PitMfdSyncStatus,
   RaceReport,
   RadioProtocol,
   SimConnectionStatus,
@@ -104,8 +105,10 @@ import { CockpitHudView, type LivePedalTraceSample } from './components/CockpitH
 import { TelemetryLabView } from './components/TelemetryLabView';
 import { SetupGarageView } from './components/SetupGarageView';
 import { RaceReportsView } from './components/RaceReportsView';
-import { SimBridgeView } from './components/SimBridgeView';
-import { EngineerSettingsModal } from './components/EngineerSettingsModal';
+import {
+  EngineerSettingsModal,
+  type EngineerSettingsModalSection,
+} from './components/EngineerSettingsModal';
 import { sampleReferencePedalAtPct } from './engine/telemetryWorkbook';
 
 const STORAGE_KEYS = {
@@ -132,6 +135,7 @@ const DEFAULT_SETTINGS: CoachSettings = {
   fuelAlertsEnabled: true,
   pitWindowCountdownEnabled: true,
   autoSelectPitTires: true,
+  preselectPitTiresInLmu: false,
   pitRaceMode: 'auto',
   pitTireOverride: 'auto',
   fuelSaveCallsEnabled: false,
@@ -301,7 +305,8 @@ function loadStoredRaceReports(): RaceReport[] {
 export default function App() {
   const [activeView, setActiveView] = useState<AppView>('pitwall');
   const [telemetryTab, setTelemetryTab] = useState<'trace' | 'reports'>('trace');
-  const [bridgeTab, setBridgeTab] = useState<'setup' | 'bridge'>('setup');
+  const [settingsInitialSection, setSettingsInitialSection] =
+    useState<EngineerSettingsModalSection>('profiles');
   const [sessionPopoverOpen, setSessionPopoverOpen] = useState<boolean>(false);
   const [selectedSim, setSelectedSim] = useState<SimGameId>('lmu');
   const [selectedTrackId, setSelectedTrackId] = useState<string>('lemans');
@@ -685,17 +690,33 @@ export default function App() {
       liveVoiceStatusRef.current === 'listening' ||
       liveVoiceStatusRef.current === 'speaking'
     ) {
-      // Only forward high-signal track alerts into Live Voice; skip routine pre-corner/strategy chatter
-      // so Practice Demo loops don't collide with driver voice turns.
+      // Forward high-signal Race Engineer & Spotter calls into Live Voice while excluding
+      // noisy pre-corner chatter and non-critical system notifications.
+      const isSystemNoise =
+        callout.cornerName === 'Auto-Detect' ||
+        callout.cornerName === 'Gemini API' ||
+        callout.cornerName === 'In-Car Dial';
+      const isRoutineStrategyInfo =
+        callout.category === 'strategy' &&
+        callout.severity === 'info' &&
+        !callout.id.startsWith('session-phase-') &&
+        !callout.cornerName.startsWith('Lap ');
       const shouldForwardToLive =
         callout.source === 'realtime-engine' &&
         callout.category !== 'pre_corner' &&
-        callout.category !== 'strategy' &&
+        !isSystemNoise &&
+        !isRoutineStrategyInfo &&
         (callout.severity === 'urgent' ||
           callout.severity === 'warning' ||
           callout.category === 'racecraft' ||
           callout.category === 'fuel' ||
-          callout.category === 'brakes');
+          callout.category === 'brakes' ||
+          callout.category === 'track_limits' ||
+          callout.category === 'tires' ||
+          callout.category === 'lockup' ||
+          callout.category === 'traction' ||
+          callout.category === 'braking' ||
+          callout.category === 'strategy');
       if (shouldForwardToLive) {
         liveClientRef.current?.sendTelemetryEvent(callout.message);
       }
@@ -963,6 +984,7 @@ export default function App() {
             : 'green',
         ...(rawFrame.inFormationLap ? { inFormationLap: true } : {}),
         ...(rawFrame.penaltyActive ? { penaltyActive: true } : {}),
+        ...(rawFrame.lapInvalidated ? { lapInvalidated: true } : {}),
         opponents: Array.isArray(rawFrame.opponents) ? rawFrame.opponents : [],
       };
 
@@ -1021,7 +1043,8 @@ export default function App() {
         effectiveSettings,
         cooldownsRef.current,
         driverProfileRef.current,
-        car
+        car,
+        { sessionType: detectedSessionTypeRef.current }
       );
       cooldownsRef.current = nextCooldowns;
 
@@ -1203,7 +1226,8 @@ export default function App() {
             settingsRef.current,
             cooldownsRef.current,
             driverProfileRef.current,
-            car
+            car,
+            { sessionType: detectedSessionTypeRef.current }
           );
           cooldownsRef.current = nextCooldowns;
           if (callout) {
@@ -1377,6 +1401,7 @@ export default function App() {
     () =>
       computePitStrategy(frame, track, car, driverProfile, setup, undefined, {
         autoSelectPitTires: settings.autoSelectPitTires ?? true,
+        preselectPitTiresInLmu: settings.preselectPitTiresInLmu ?? false,
         pitRaceMode: settings.pitRaceMode ?? 'auto',
         pitTireOverride: settings.pitTireOverride ?? 'auto',
         sessionType: detectedSessionType,
@@ -1391,6 +1416,7 @@ export default function App() {
       driverProfile,
       setup,
       settings.autoSelectPitTires,
+      settings.preselectPitTiresInLmu,
       settings.pitRaceMode,
       settings.pitTireOverride,
       detectedSessionType,
@@ -1405,6 +1431,98 @@ export default function App() {
     recentIncidentsRef.current = filtered;
     setRecentIncidents(filtered);
   }, []);
+
+  const [pitMfdSyncStatus, setPitMfdSyncStatus] = useState<PitMfdSyncStatus>({
+    state: 'idle',
+    lastAttemptAtMs: null,
+    lastAppliedAtMs: null,
+    appliedHeadline: null,
+    via: 'none',
+    message: 'Off — Enable Preselect in LMU to push pit tires into LMU (:6397).',
+  });
+  const lastAutoSyncedPitKeyRef = useRef<string>('');
+
+  const syncPitMenuToLmu = useCallback(
+    async (plan: Pick<typeof pitStrategy, 'tireAction' | 'tireCompound' | 'repairsRecommended' | 'fuelToAddLiters' | 'pitTireCallHeadline'>) => {
+      try {
+        const resp = await fetch('/api/lmu/pit-menu/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tireAction: plan.tireAction,
+            tireCompound: plan.tireCompound,
+            repairsRecommended: plan.repairsRecommended,
+            fuelToAddLiters: Math.round(plan.fuelToAddLiters),
+            pitTireCallHeadline: plan.pitTireCallHeadline,
+          }),
+        });
+        const data = (await resp.json()) as { status?: PitMfdSyncStatus; error?: string };
+        if (data?.status) {
+          setPitMfdSyncStatus(data.status);
+        } else if (!resp.ok) {
+          setPitMfdSyncStatus({
+            state: 'error',
+            lastAttemptAtMs: Date.now(),
+            lastAppliedAtMs: null,
+            appliedHeadline: null,
+            via: 'none',
+            message: data?.error || 'Could not reach Pit MFD sync endpoint.',
+          });
+        }
+      } catch (err) {
+        setPitMfdSyncStatus({
+          state: 'error',
+          lastAttemptAtMs: Date.now(),
+          lastAppliedAtMs: null,
+          appliedHeadline: null,
+          via: 'none',
+          message: err instanceof Error ? err.message : 'Network error syncing LMU Pit MFD.',
+        });
+      }
+    },
+    []
+  );
+
+  // Deduplicated auto-preselect into LMU Pit MFD (:6397) only when opted in and strategy changes
+  useEffect(() => {
+    if (!(settings.preselectPitTiresInLmu ?? false)) {
+      lastAutoSyncedPitKeyRef.current = '';
+      return;
+    }
+    if (!simStatus?.gameRunning || simStatus.simId !== 'lmu') return;
+    const syncKey = `${pitStrategy.tireAction}:${pitStrategy.tireCompound}:${pitStrategy.repairsRecommended}`;
+    if (lastAutoSyncedPitKeyRef.current === syncKey) return;
+    lastAutoSyncedPitKeyRef.current = syncKey;
+    void syncPitMenuToLmu(pitStrategy);
+  }, [
+    settings.preselectPitTiresInLmu,
+    simStatus?.gameRunning,
+    simStatus?.simId,
+    pitStrategy.tireAction,
+    pitStrategy.tireCompound,
+    pitStrategy.repairsRecommended,
+    pitStrategy.fuelToAddLiters,
+    pitStrategy.pitTireCallHeadline,
+    syncPitMenuToLmu,
+  ]);
+
+  // Poll /api/lmu/pit-menu/status only while waiting for remote Windows bridge confirmation
+  useEffect(() => {
+    if (pitMfdSyncStatus.state !== 'pending_bridge') return;
+    const timer = window.setInterval(async () => {
+      try {
+        const resp = await fetch('/api/lmu/pit-menu/status');
+        if (!resp.ok) return;
+        const data = (await resp.json()) as { status?: PitMfdSyncStatus };
+        if (data?.status) {
+          setPitMfdSyncStatus(data.status);
+        }
+      } catch {
+        // ignore transient poll failures
+      }
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, [pitMfdSyncStatus.state]);
 
   const wasInPitForTireAutoRef = useRef<boolean>(Boolean(frame.inPitOrGarage));
   const lastPitTireAutoCalloutAtRef = useRef<number>(0);
@@ -1575,6 +1693,8 @@ export default function App() {
       setActiveFault('none');
       setFrame((prev) => ({
         ...prev,
+        inFormationLap: false,
+        inPitOrGarage: false,
         fuelLiters: Math.max(prev.fuelLiters, 42),
         tireTempC: { fl: 85, fr: 84, rl: 82, rr: 81 },
         tireWearPct: { fl: 96, fr: 96, rl: 97, rr: 97 },
@@ -1674,6 +1794,21 @@ export default function App() {
         ...prev,
         inPitOrGarage: false,
         speedKmh: Math.max(prev.speedKmh, 148),
+      }));
+    } else if (fault === 'formation_lap') {
+      setFrame((prev) => ({
+        ...prev,
+        inPitOrGarage: false,
+        inFormationLap: true,
+        speedKmh: 95,
+        tireTempC: { fl: 44, fr: 44, rl: 43, rr: 43 },
+      }));
+    } else if (fault === 'pit_speeding') {
+      setFrame((prev) => ({
+        ...prev,
+        inFormationLap: false,
+        inPitOrGarage: true,
+        speedKmh: 78,
       }));
     }
   };
@@ -2627,8 +2762,18 @@ export default function App() {
         isLiveRunning={isLiveRunning}
         externalStreamActive={externalStreamActive}
         simStatus={simStatus}
+        liveVoiceStatus={liveVoiceStatus}
+        liveVoicePhase={liveVoicePhase}
+        onToggleLiveVoice={handleToggleLiveVoice}
         onToggleLive={handleToggleLive}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenSettings={() => {
+          setSettingsInitialSection('profiles');
+          setIsSettingsOpen(true);
+        }}
+        onOpenSimBridge={() => {
+          setSettingsInitialSection('sim_bridge');
+          setIsSettingsOpen(true);
+        }}
       />
 
       {/* Single-Line Context Strip & On-Demand Session Switcher Popover */}
@@ -2909,6 +3054,7 @@ export default function App() {
             externalStreamActive={externalStreamActive}
             simStatus={simStatus}
             onToggleLiveVoice={handleToggleLiveVoice}
+            onToggleLive={handleToggleLive}
             onToggleNewToGame={handleToggleNewToGame}
             onApplyElectronicsSuggestion={handleApplyElectronicsSuggestion}
             onUndoAutonomyAction={handleUndoAutonomyAction}
@@ -2919,7 +3065,14 @@ export default function App() {
             isAskingEngineer={isAskingEngineer}
             recentPedalTrace={recentPedalTrace}
             skillMetrics={skillMetrics}
-            onOpenSettings={() => setIsSettingsOpen(true)}
+            onOpenSettings={() => {
+              setSettingsInitialSection('profiles');
+              setIsSettingsOpen(true);
+            }}
+            onOpenSimBridge={() => {
+              setSettingsInitialSection('sim_bridge');
+              setIsSettingsOpen(true);
+            }}
             onOpenCockpitHud={() => setActiveView('cockpit')}
             onInspectDrillCorner={() => {
               setTelemetryTab('trace');
@@ -2932,6 +3085,8 @@ export default function App() {
             sessionPhaseOverride={sessionPhaseOverride}
             onChangeSessionPhaseOverride={setSessionPhaseOverride}
             onDismissCrashAlert={handleDismissCrashAlert}
+            pitMfdSyncStatus={pitMfdSyncStatus}
+            onSyncPitMenuToLmu={() => void syncPitMenuToLmu(pitStrategy)}
           />
         )}
 
@@ -3033,115 +3188,63 @@ export default function App() {
         )}
 
         {activeView === 'bridge' && (
-          <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#1B2230] pb-3">
-              <div
-                className="inline-flex rounded-md border border-[#273145] bg-[#0B0F17] p-0.5 text-xs"
-                role="tablist"
-                aria-label="Garage and bridge views"
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={bridgeTab === 'setup'}
-                  onClick={() => setBridgeTab('setup')}
-                  data-testid="bridge-subtab-setup"
-                  className={`rounded px-3 py-1.5 font-medium cursor-pointer whitespace-nowrap ${
-                    bridgeTab === 'setup'
-                      ? 'bg-[#1D273B] text-cyan-200 border border-cyan-500/35'
-                      : 'text-slate-400 hover:text-slate-100 border border-transparent'
-                  }`}
-                >
-                  Setup Garage
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={bridgeTab === 'bridge'}
-                  onClick={() => setBridgeTab('bridge')}
-                  data-testid="bridge-subtab-bridge"
-                  className={`rounded px-3 py-1.5 font-medium cursor-pointer whitespace-nowrap ${
-                    bridgeTab === 'bridge'
-                      ? 'bg-[#1D273B] text-cyan-200 border border-cyan-500/35'
-                      : 'text-slate-400 hover:text-slate-100 border border-transparent'
-                  }`}
-                >
-                  Sim Bridge &amp; Test Lab
-                </button>
-              </div>
-              <span className="font-mono text-[11px] text-slate-500">
-                {car.name} · {simDisplayName}
-              </span>
-            </div>
-
-            {bridgeTab === 'setup' ? (
-              <SetupGarageView
-                simId={selectedSim}
-                simName={simDisplayName}
-                track={track}
-                car={car}
-                setup={setup}
-                driverProfile={driverProfile}
-                setupIntake={setupIntake}
-                settings={settings}
-                pitStrategy={pitStrategy}
-                cornerComparisons={cornerComparisons}
-                latestFrame={frame}
-                language="en"
-                onSwitchToLmu={() => setSelectedSim('lmu')}
-                onUpdateSetup={setSetup}
-                onResetSetup={() => setSetup(car.defaultSetup)}
-                onUpdateSetupIntake={handleUpdateSetupIntake}
-                onUpdateSettings={handleUpdateSettings}
-                onDismissCrashAlert={handleDismissCrashAlert}
-              />
-            ) : (
-              <SimBridgeView
-                selectedSim={selectedSim}
-                track={track}
-                car={car}
-                settings={settings}
-                wsConnected={wsConnected}
-                externalStreamActive={externalStreamActive}
-                simStatus={simStatus}
-                autoDetectEnabled={autoDetectEnabled}
-                detectedSession={detectedSession}
-                hardwareState={hardwareState}
-                hardwareMapping={hardwareMapping}
-                hardwareDriveEnabled={hardwareDriveEnabled}
-                keyboardDriveEnabled={keyboardDriveEnabled}
-                activeFault={activeFault}
-                sessionPhaseOverride={sessionPhaseOverride}
-                onToggleAutoDetect={() => setAutoDetectEnabled((v) => !v)}
-                onToggleHardwareDrive={() => setHardwareDriveEnabled((v) => !v)}
-                onToggleKeyboardDrive={() => setKeyboardDriveEnabled((v) => !v)}
-                onUpdateHardwareMapping={(patch) =>
-                  setHardwareMapping((prev) => ({ ...prev, ...patch }))
-                }
-                onCalibrateHardwareRest={handleCalibrateHardwareRest}
-                onUpdateSettings={handleUpdateSettings}
-                onResetSettings={handleResetSettings}
-                onTestCallout={handleTestEngineerCallout}
-                onOpenSettings={() => setIsSettingsOpen(true)}
-                onTriggerFault={handleTriggerFault}
-                onManualPedalOverride={handleManualPedalOverride}
-                onChangeSessionPhaseOverride={setSessionPhaseOverride}
-              />
-            )}
-          </div>
+          <SetupGarageView
+            simId={selectedSim}
+            simName={simDisplayName}
+            track={track}
+            car={car}
+            setup={setup}
+            driverProfile={driverProfile}
+            setupIntake={setupIntake}
+            pitStrategy={pitStrategy}
+            cornerComparisons={cornerComparisons}
+            latestFrame={frame}
+            language="en"
+            onSwitchToLmu={() => setSelectedSim('lmu')}
+            onUpdateSetup={setSetup}
+            onResetSetup={() => setSetup(car.defaultSetup)}
+            onUpdateSetupIntake={handleUpdateSetupIntake}
+            onDismissCrashAlert={handleDismissCrashAlert}
+            pitMfdSyncStatus={pitMfdSyncStatus}
+            onSyncPitMenuToLmu={() => void syncPitMenuToLmu(pitStrategy)}
+            onOpenPitWall={() => setActiveView('pitwall')}
+          />
         )}
       </main>
 
       <EngineerSettingsModal
         isOpen={isSettingsOpen}
+        initialSection={settingsInitialSection}
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onUpdateSettings={handleUpdateSettings}
         onTestCallout={handleTestEngineerCallout}
         onResetDefaults={handleResetSettings}
-        onOpenSimBridge={() => {
-          setBridgeTab('bridge');
-          setActiveView('bridge');
+        simBridgeProps={{
+          selectedSim,
+          track,
+          car,
+          wsConnected,
+          externalStreamActive,
+          simStatus,
+          autoDetectEnabled,
+          detectedSession,
+          hardwareState,
+          hardwareMapping,
+          hardwareDriveEnabled,
+          keyboardDriveEnabled,
+          activeFault,
+          sessionPhaseOverride,
+          onToggleAutoDetect: () => setAutoDetectEnabled((v) => !v),
+          onToggleHardwareDrive: () => setHardwareDriveEnabled((v) => !v),
+          onToggleKeyboardDrive: () => setKeyboardDriveEnabled((v) => !v),
+          onUpdateHardwareMapping: (patch) =>
+            setHardwareMapping((prev) => ({ ...prev, ...patch })),
+          onCalibrateHardwareRest: handleCalibrateHardwareRest,
+          onResetSettings: handleResetSettings,
+          onTriggerFault: handleTriggerFault,
+          onManualPedalOverride: handleManualPedalOverride,
+          onChangeSessionPhaseOverride: setSessionPhaseOverride,
         }}
       />
     </div>

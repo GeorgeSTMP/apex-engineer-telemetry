@@ -24,6 +24,7 @@ import {
   sampleReferencePedalAtPct,
   svgRatioToPct,
 } from '../engine/telemetryWorkbook';
+import { interpolateTrackPose } from '../engine/trackMapRadar';
 
 interface TelemetryLabViewProps {
   simName: string;
@@ -237,6 +238,16 @@ export function TelemetryLabView({
   }, [hoverPct, deltaSeries.points]);
 
   const hoverSvgX = hoverPct !== null ? projectPctToSvgX(hoverPct, domain, width) : null;
+
+  const activeCursorPct = hoverPct ?? selectedCorner?.apexPct ?? 0;
+  const activeCursorPose = useMemo(
+    () => interpolateTrackPose(track, activeCursorPct),
+    [track, activeCursorPct]
+  );
+  const selectedCornerPose = useMemo(
+    () => (selectedCorner ? interpolateTrackPose(track, selectedCorner.apexPct) : null),
+    [track, selectedCorner]
+  );
 
   const handleAnalyzeLap = async () => {
     setIsAnalyzing(true);
@@ -704,10 +715,72 @@ export function TelemetryLabView({
           </div>
         </div>
 
-        {/* Selected Corner Deep Inspection (Hairline Divided) */}
+        {/* Selected Corner Deep Inspection + MoTeC Synced Circuit Map */}
         {selectedCorner && selectedComparison && (
           <div className="mt-4 grid grid-cols-1 gap-4 rounded-md border border-[#1B2230] bg-[#090B10] p-4 md:grid-cols-12 md:items-center">
-            <div className="md:col-span-5">
+            <div
+              className="rounded border border-[#1B2230] bg-[#0D111A] p-2.5 md:col-span-3"
+              data-testid="telemetry-circuit-minimap"
+            >
+              <div className="mb-1 flex items-center justify-between font-mono text-[10px] text-slate-400">
+                <span className="uppercase tracking-wider">Circuit Sync</span>
+                <span className="tabular-nums text-cyan-300">
+                  {Math.round(activeCursorPct * track.lengthKm * 1000)}m ·{' '}
+                  {hoverPct !== null ? 'Trace' : `T${selectedCorner.number}`}
+                </span>
+              </div>
+              <svg
+                viewBox={track.svgViewBox}
+                preserveAspectRatio="xMidYMid meet"
+                className="h-24 w-full"
+                aria-label={`${track.name} telemetry trace position map`}
+              >
+                <path
+                  d={track.svgPath}
+                  fill="none"
+                  stroke="#1E293B"
+                  strokeWidth={14}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d={track.svgPath}
+                  fill="none"
+                  stroke="#475569"
+                  strokeWidth={4}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                {selectedCornerPose && (
+                  <circle
+                    cx={selectedCornerPose.x}
+                    cy={selectedCornerPose.y}
+                    r={10}
+                    fill="#F59E0B"
+                    fillOpacity={0.28}
+                    stroke="#F59E0B"
+                    strokeWidth={2}
+                  />
+                )}
+                <circle
+                  cx={activeCursorPose.x}
+                  cy={activeCursorPose.y}
+                  r={12}
+                  fill="#06B6D4"
+                  fillOpacity={0.25}
+                />
+                <circle
+                  cx={activeCursorPose.x}
+                  cy={activeCursorPose.y}
+                  r={6.5}
+                  fill="#22D3EE"
+                  stroke="#ECFEFF"
+                  strokeWidth={2}
+                />
+              </svg>
+            </div>
+
+            <div className="md:col-span-4">
               <div className="font-mono text-[11px] font-medium text-cyan-400">
                 {`Selected Corner · Sector ${selectedCorner.sector}`}
               </div>
@@ -721,8 +794,8 @@ export function TelemetryLabView({
                 Pro Cue: {selectedCorner.coachingCue}
               </p>
             </div>
-            <div className="grid grid-cols-2 divide-y divide-[#1B2230] border-t border-[#1B2230] pt-3 font-mono tabular-nums sm:grid-cols-4 sm:divide-x sm:divide-y-0 md:col-span-7 md:border-t-0 md:border-l md:pl-4 md:pt-0">
-              <div className="py-1.5 pr-3 sm:py-0">
+            <div className="grid grid-cols-2 divide-y divide-[#1B2230] border-t border-[#1B2230] pt-3 font-mono tabular-nums sm:grid-cols-2 sm:divide-x sm:divide-y md:col-span-5 md:border-t-0 md:border-l md:pl-4 md:pt-0">
+              <div className="py-2 pr-3">
                 <div className="text-[10px] uppercase tracking-wider text-slate-400">Brake Point</div>
                 <div
                   className={`mt-1 text-base font-semibold ${
@@ -737,7 +810,7 @@ export function TelemetryLabView({
                   {selectedComparison.brakingDeltaMeters > 0 ? 'Later than ref' : 'Earlier than ref'}
                 </div>
               </div>
-              <div className="py-1.5 px-0 sm:px-3 sm:py-0">
+              <div className="py-2 pl-3 sm:border-t-0">
                 <div className="text-[10px] uppercase tracking-wider text-slate-400">Apex Speed</div>
                 <div
                   className={`mt-1 text-base font-semibold ${
@@ -751,14 +824,14 @@ export function TelemetryLabView({
                 </div>
                 <div className="text-[10px] text-slate-500">Target {selectedCorner.targetApexSpeedKmh} km/h</div>
               </div>
-              <div className="py-1.5 pr-3 sm:px-3 sm:py-0">
+              <div className="py-2 pr-3 sm:border-l-0">
                 <div className="text-[10px] uppercase tracking-wider text-slate-400">Trail Score</div>
                 <div className="mt-1 text-base font-semibold text-cyan-400">
                   {selectedComparison.trailBrakingScore}/100
                 </div>
                 <div className="text-[10px] text-slate-500">Brake-to-steer</div>
               </div>
-              <div className="py-1.5 pl-0 sm:pl-3 sm:py-0">
+              <div className="py-2 pl-3">
                 <div className="text-[10px] uppercase tracking-wider text-slate-400">Time Lost</div>
                 <div
                   className={`mt-1 text-base font-semibold ${

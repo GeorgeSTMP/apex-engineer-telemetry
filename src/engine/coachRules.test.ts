@@ -911,4 +911,201 @@ test('Enabled Alert toggles fire cleanly without silent vetoes from verbosity=mi
   assert.equal(urgentFuelSecond.callout.category, 'fuel');
 });
 
+test('LMU gameplay flow: pit limiter speeding, in-pit suppression, green flag start, quali lap invalidation, VE pit window, and attack coaching', () => {
+  const track = TRACKS[0];
+  const car = CARS[0]; // Hypercar
+
+  // 1. Pit lane speeding (> 62 km/h) triggers urgent limiter callout
+  const pitSpeedRes = evaluateLiveTelemetry(
+    makeFrame({ timestampMs: 400000, inPitOrGarage: true, speedKmh: 78 }),
+    null,
+    track,
+    null,
+    null,
+    { ...defaultSettings, preCornerCuesEnabled: false },
+    createInitialCooldowns(),
+    undefined,
+    car,
+    { sessionType: 'race' }
+  );
+  assert.ok(pitSpeedRes.callout);
+  assert.equal(pitSpeedRes.callout.severity, 'urgent');
+  assert.match(pitSpeedRes.callout.message, /pit limiter|60/i);
+
+  // 2. Safe pit lane / garage suppresses cold tires, lockups, and pre-corner cues
+  const pitSafeRes = evaluateLiveTelemetry(
+    makeFrame({
+      timestampMs: 402000,
+      inPitOrGarage: true,
+      speedKmh: 55,
+      tireTempC: { fl: 45, fr: 45, rl: 45, rr: 45 },
+      offTrackRisk: 0.95,
+    }),
+    null,
+    track,
+    track.corners[0],
+    null,
+    { ...defaultSettings, preCornerCuesEnabled: true, tireAlertsEnabled: true, trackLimitsAlertsEnabled: true },
+    createInitialCooldowns(),
+    undefined,
+    car,
+    { sessionType: 'race' }
+  );
+  assert.equal(pitSafeRes.callout, null);
+
+  // 3. Formation Lap -> Green Flag transition fires immediate Green Flag + cold T1 cue
+  const prevForm = makeFrame({ timestampMs: 410000, inFormationLap: true, lapDistPct: 0.99, speedKmh: 60 });
+  const greenStart = makeFrame({ timestampMs: 411000, inFormationLap: false, lapDistPct: 0.01, speedKmh: 165 });
+  const greenRes = evaluateLiveTelemetry(
+    greenStart,
+    prevForm,
+    track,
+    null,
+    null,
+    { ...defaultSettings, preCornerCuesEnabled: false },
+    createInitialCooldowns(),
+    undefined,
+    car,
+    { sessionType: 'race' }
+  );
+  assert.ok(greenRes.callout);
+  assert.equal(greenRes.callout.severity, 'urgent');
+  assert.match(greenRes.callout.message, /Green, green, green/i);
+
+  // 4. Qualifying lapInvalidated fires lap-deleted reset gap cue
+  const prevQuali = makeFrame({ timestampMs: 420000, lapDistPct: 0.45, lapInvalidated: false });
+  const invQuali = makeFrame({ timestampMs: 421000, lapDistPct: 0.46, lapInvalidated: true });
+  const qualiDelRes = evaluateLiveTelemetry(
+    invQuali,
+    prevQuali,
+    track,
+    track.corners[4],
+    null,
+    { ...defaultSettings, preCornerCuesEnabled: false, trackLimitsAlertsEnabled: true },
+    createInitialCooldowns(),
+    undefined,
+    car,
+    { sessionType: 'qualifying' }
+  );
+  assert.ok(qualiDelRes.callout);
+  assert.equal(qualiDelRes.callout.category, 'track_limits');
+  assert.match(qualiDelRes.callout.message, /Lap deleted/i);
+
+  // 5. Hypercar VE pit window fires at 20% VE in race (even with 35L fuel left), suppressed in qualifying
+  const veWindowFrame = makeFrame({
+    timestampMs: 430000,
+    lapDistPct: 0.25,
+    fuelLiters: 35,
+    virtualEnergyPct: 20,
+  });
+  const veRaceRes = evaluateLiveTelemetry(
+    veWindowFrame,
+    null,
+    track,
+    null,
+    null,
+    { ...defaultSettings, preCornerCuesEnabled: false, pitWindowCountdownEnabled: true },
+    createInitialCooldowns(),
+    undefined,
+    car,
+    { sessionType: 'race' }
+  );
+  assert.ok(veRaceRes.callout);
+  assert.equal(veRaceRes.callout.category, 'strategy');
+  assert.match(veRaceRes.callout.message, /Virtual Energy|VE/i);
+
+  const veQualiMuted = evaluateLiveTelemetry(
+    veWindowFrame,
+    null,
+    track,
+    null,
+    null,
+    { ...defaultSettings, preCornerCuesEnabled: false, pitWindowCountdownEnabled: true },
+    createInitialCooldowns(),
+    undefined,
+    car,
+    { sessionType: 'qualifying' }
+  );
+  assert.equal(veQualiMuted.callout, null);
+
+  // 6. Pit exit cold slicks warns about closing merge traffic
+  const pitExitPrev = makeFrame({ timestampMs: 440000, inPitOrGarage: true, speedKmh: 58 });
+  const pitExitNow = makeFrame({
+    timestampMs: 441000,
+    inPitOrGarage: false,
+    speedKmh: 115,
+    opponents: [
+      {
+        id: 'opp-7',
+        carNumber: '7',
+        driverName: 'K. Kobayashi',
+        carClass: 'Hypercar',
+        carName: 'Toyota GR010',
+        lapDistPct: 0.01,
+        speedKmh: 265,
+        gapSeconds: -1.1,
+        distanceMeters: -85,
+        closingSpeedKmh: 150,
+        lateralSide: 'center',
+        isAlongside: false,
+        safetyRating: 'clean',
+      },
+    ],
+  });
+  const pitExitRes = evaluateLiveTelemetry(
+    pitExitNow,
+    pitExitPrev,
+    track,
+    null,
+    null,
+    { ...defaultSettings, preCornerCuesEnabled: false, racecraftAlertsEnabled: false, tireAlertsEnabled: true },
+    createInitialCooldowns(),
+    undefined,
+    car,
+    { sessionType: 'race' }
+  );
+  assert.ok(pitExitRes.callout);
+  assert.match(pitExitRes.callout.message, /cold slicks/i);
+  assert.match(pitExitRes.callout.message, /#7/);
+
+  // 7. Closing battle ahead on straight triggers winning attack coaching
+  const closingRes = evaluateLiveTelemetry(
+    makeFrame({
+      timestampMs: 450000,
+      lapDistPct: 0.4,
+      speedKmh: 280,
+      opponents: [
+        {
+          id: 'opp-83',
+          carNumber: '83',
+          driverName: 'R. Kubica',
+          carClass: 'Hypercar',
+          carName: 'AF Corse 499P',
+          lapDistPct: 0.41,
+          speedKmh: 265,
+          gapSeconds: 1.4,
+          distanceMeters: 110,
+          closingSpeedKmh: 15,
+          lateralSide: 'center',
+          isAlongside: false,
+          safetyRating: 'clean',
+          position: 2,
+        },
+      ],
+    }),
+    null,
+    track,
+    null,
+    null,
+    { ...defaultSettings, preCornerCuesEnabled: false, racecraftAlertsEnabled: false, gapSplitsEnabled: true },
+    createInitialCooldowns(),
+    undefined,
+    car,
+    { sessionType: 'race' }
+  );
+  assert.ok(closingRes.callout);
+  assert.match(closingRes.callout.message, /Closing fast on P2 #83/i);
+});
+
+
 

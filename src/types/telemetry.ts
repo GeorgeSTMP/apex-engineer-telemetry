@@ -101,6 +101,8 @@ export interface PitStrategyPlan {
   fuelRemainingLiters: number;
   fuelBurnPerLapLiters: number;
   lapsOfFuelLeft: number;
+  lapsOfVeLeft?: number;
+  stintLimitingFactor?: 'fuel' | 'virtual_energy' | 'tires' | 'damage' | 'none';
   recommendedPitLap: number;
   fuelToAddLiters: number;
   tireAction: 'change_all' | 'fuel_only' | 'change_fronts';
@@ -174,6 +176,7 @@ export interface TelemetryFrame {
   virtualEnergyPct?: number; // 0..100 LMU Hypercar Virtual Energy tank remaining
   inFormationLap?: boolean;
   penaltyActive?: boolean;
+  lapInvalidated?: boolean;
   flatTire?: boolean;
   wheelDetached?: boolean;
   posX?: number;
@@ -527,6 +530,7 @@ export interface CoachSettings {
   fuelAlertsEnabled?: boolean;
   pitWindowCountdownEnabled?: boolean;
   autoSelectPitTires?: boolean;
+  preselectPitTiresInLmu?: boolean;
   pitRaceMode?: PitRaceMode;
   pitTireOverride?: PitTireOverride;
   fuelSaveCallsEnabled?: boolean;
@@ -640,5 +644,25 @@ export interface RaceReport {
   provenGainSec?: number;
   aiBrief?: AiPostRaceBrief | null;
 }
+
+export interface PitMfdSyncRequest {
+  requestId: string;
+  createdAtMs: number;
+  tireAction: 'fuel_only' | 'change_fronts' | 'change_all';
+  tireCompound: 'Soft' | 'Medium' | 'Hard' | 'Wet';
+  repairsRecommended: boolean;
+  fuelToAddLiters?: number;
+  pitTireCallHeadline: string;
+}
+
+export interface PitMfdSyncStatus {
+  state: 'idle' | 'pending_bridge' | 'applied' | 'sim_offline' | 'error';
+  lastAttemptAtMs: number | null;
+  lastAppliedAtMs: number | null;
+  appliedHeadline: string | null;
+  via: 'local-lmu-rest' | 'remote-bridge' | 'none';
+  message: string;
+}
+
 
 

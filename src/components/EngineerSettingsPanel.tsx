@@ -690,7 +690,24 @@ export function EngineerSettingsPanel({
                 />
               </label>
 
-              <div>
+              <label className="flex items-center justify-between gap-3 cursor-pointer">
+                <div>
+                  <div className="text-xs font-medium text-slate-100">Preselect Tires in LMU Pit MFD</div>
+                  <div className="text-[11px] text-slate-400">
+                    Writes tire &amp; repair selections into LMU (:6397) so pressing Pit already has them queued
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  data-testid="settings-preselect-lmu-tires"
+                  aria-label="Preselect Tires in LMU Pit MFD"
+                  checked={settings.preselectPitTiresInLmu ?? false}
+                  onChange={(e) => applySettingPatch({ preselectPitTiresInLmu: e.target.checked })}
+                  className="h-4 w-4 accent-cyan-500 cursor-pointer shrink-0"
+                />
+              </label>
+
+              <div className="sm:col-span-2">
                 <label htmlFor="settings-pit-race-mode" className="block text-xs font-medium text-slate-300">
                   Pit Strategy Game Mode
                 </label>
@@ -729,7 +746,7 @@ export function EngineerSettingsPanel({
                   className="mt-1.5 h-9 w-full rounded-md border border-[#273145] bg-[#090B10] px-2.5 text-xs text-slate-100 focus:border-cyan-500 focus:outline-none"
                 >
                   <option value="advise">Advise-Only (Radio calls only)</option>
-                  <option value="hands_on">Auto-Apply (Tunes TC / ABS / Bias)</option>
+                  <option value="hands_on">Auto-Apply (Tunes in-app TC / ABS / Bias)</option>
                 </select>
               </div>
 
