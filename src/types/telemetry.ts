@@ -55,6 +55,8 @@ export interface DriverHabitMetrics {
   avgTrailBrakeScore: number;
   avgDeltaSec: number;
   brakingConsistencyPct: number;
+  observedFuelPerLapLiters?: number;
+  observedWearPerLapPct?: number;
 }
 
 export interface DriverProfile {
@@ -95,6 +97,39 @@ export type PitTireOverride =
   | 'all_hard'
   | 'all_wet';
 
+export interface PitStintSegment {
+  stintNumber: number;
+  startLap: number;
+  endLap: number;
+  compound: 'Soft' | 'Medium' | 'Hard' | 'Wet';
+  actionLabel: string;
+  isCurrent: boolean;
+  isPitStopBefore: boolean;
+  pitLap?: number;
+  estimatedWearAtEndPct: number;
+}
+
+export interface PitStrategyOption {
+  id: 'plan_auto' | 'plan_a' | 'plan_b' | 'plan_c';
+  code: 'Plan Auto' | 'Plan A' | 'Plan B' | 'Plan C';
+  name: string;
+  tag: 'Dynamic AI' | 'Recommended' | 'Undercut' | 'Track Pos' | 'Aggressive' | 'Safe Long' | 'Emergency';
+  pitRequired: boolean;
+  pitLap: number | null;
+  pitWindowStartLap: number | null;
+  pitWindowEndLap: number | null;
+  nextTireAction: 'change_all' | 'fuel_only' | 'change_fronts';
+  nextCompound: 'Soft' | 'Medium' | 'Hard' | 'Wet';
+  nextTireHeadline: string;
+  pitTireOverride: PitTireOverride;
+  autoSelectPitTires: boolean;
+  stopLossSec: number;
+  deltaToOptimalSec: number;
+  projectedFinishWearPct: number;
+  rationale: string;
+  stints: PitStintSegment[];
+}
+
 export interface PitStrategyPlan {
   raceLengthLaps: number;
   currentLap: number;
@@ -123,6 +158,18 @@ export interface PitStrategyPlan {
   pitStopDurationEstSec: number;
   setupAdjustmentsAtPit: string[];
   engineerSummary: string;
+  currentCompound: 'Soft' | 'Medium' | 'Hard' | 'Wet';
+  pitWindowStartLap: number;
+  pitWindowEndLap: number;
+  pitNeededThisRace: boolean;
+  estimatedWearAtPitPct: number;
+  estimatedWearAtFlagPct: number;
+  estimatedCliffLap: number | null;
+  pitLaneLossTotalSec: number;
+  rejoinTrafficNote: string;
+  learnedAdaptationNote?: string | null;
+  activeStints: PitStintSegment[];
+  strategyOptions: PitStrategyOption[];
 }
 
 export interface TireCorners {
@@ -171,6 +218,8 @@ export interface TelemetryFrame {
   telemetrySource?: 'lmu-rest' | 'shared-memory' | 'udp-5606' | 'demo';
   sessionType?: SimSessionType;
   rawSessionName?: string;
+  sessionTotalLaps?: number;
+  sessionTimeRemainingSec?: number;
   inPitOrGarage?: boolean;
   isPaused?: boolean;
   virtualEnergyPct?: number; // 0..100 LMU Hypercar Virtual Energy tank remaining

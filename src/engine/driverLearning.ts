@@ -3,6 +3,7 @@ import type {
   CarProfile,
   CarSetup,
   CoachCallout,
+  CoachSettings,
   CompactTelemetryPoint,
   CornerComparison,
   CornerDefinition,
@@ -13,6 +14,8 @@ import type {
   LapRecord,
   LearnedCornerStats,
   PitRaceMode,
+  PitStintSegment,
+  PitStrategyOption,
   PitStrategyPlan,
   PitTireOverride,
   ReferenceSample,
@@ -56,7 +59,12 @@ export function createDefaultDriverProfile(isNewToGame = true): DriverProfile {
 export function recordDriverObservation(
   profile: DriverProfile,
   callout: CoachCallout | null,
-  completedLap?: { deltaSec: number; trailScore: number }
+  completedLap?: {
+    deltaSec: number;
+    trailScore: number;
+    fuelBurnedLiters?: number;
+    maxTireWearLostPct?: number;
+  }
 ): DriverProfile {
   const habits = { ...profile.habits };
 
@@ -72,6 +80,32 @@ export function recordDriverObservation(
     habits.lapsAnalyzed = n;
     habits.avgDeltaSec = Math.round(((habits.avgDeltaSec * (n - 1) + completedLap.deltaSec) / n) * 100) / 100;
     habits.avgTrailBrakeScore = Math.round((habits.avgTrailBrakeScore * (n - 1) + completedLap.trailScore) / n);
+    if (
+      typeof completedLap.fuelBurnedLiters === 'number' &&
+      Number.isFinite(completedLap.fuelBurnedLiters) &&
+      completedLap.fuelBurnedLiters > 0.3 &&
+      completedLap.fuelBurnedLiters < 25
+    ) {
+      const prevFuel = habits.observedFuelPerLapLiters;
+      const nextFuel =
+        typeof prevFuel === 'number' && prevFuel > 0
+          ? prevFuel * 0.55 + completedLap.fuelBurnedLiters * 0.45
+          : completedLap.fuelBurnedLiters;
+      habits.observedFuelPerLapLiters = Math.round(nextFuel * 100) / 100;
+    }
+    if (
+      typeof completedLap.maxTireWearLostPct === 'number' &&
+      Number.isFinite(completedLap.maxTireWearLostPct) &&
+      completedLap.maxTireWearLostPct > 0.1 &&
+      completedLap.maxTireWearLostPct < 25
+    ) {
+      const prevWear = habits.observedWearPerLapPct;
+      const nextWear =
+        typeof prevWear === 'number' && prevWear > 0
+          ? prevWear * 0.55 + completedLap.maxTireWearLostPct * 0.45
+          : completedLap.maxTireWearLostPct;
+      habits.observedWearPerLapPct = Math.round(nextWear * 100) / 100;
+    }
   }
 
   const errorDensity =
@@ -212,7 +246,7 @@ export function resolvePitRaceMode(params: {
     return 'practice_quali';
   }
   if (typeof explicitRaceLengthLaps === 'number') {
-    if (explicitRaceLengthLaps <= 10) return 'short_online';
+    if (explicitRaceLengthLaps <= 12) return 'short_online';
     if (explicitRaceLengthLaps >= 26) return 'endurance';
     return 'standard_online';
   }
@@ -340,12 +374,25 @@ export function computePitStrategy(
           ? `Hard deceleration spike (${frame.longG.toFixed(1)}g) — check steering straightness and pit if damaged.`
           : null;
 
-  const fuelBurnPerLapLiters =
+  const baseFuelBurnPerLapLiters =
     car.carClass === 'Hypercar'
       ? track.lengthKm > 9 ? 5.8 : 3.2
       : car.carClass === 'LMP2'
         ? track.lengthKm > 9 ? 5.1 : 2.8
         : track.lengthKm > 9 ? 4.4 : 2.4;
+  const learnedFuelBurn = profile.habits.observedFuelPerLapLiters;
+  const habitFuelMult =
+    profile.habits.exitSnapCount >= 3 || profile.habits.brakingConsistencyPct < 75
+      ? 1.04
+      : profile.habits.lapsAnalyzed >= 3 &&
+          profile.habits.brakingConsistencyPct >= 90 &&
+          profile.habits.lockupCount === 0
+        ? 0.96
+        : 1.0;
+  const fuelBurnPerLapLiters =
+    typeof learnedFuelBurn === 'number' && learnedFuelBurn > 0.5
+      ? Math.round((baseFuelBurnPerLapLiters * 0.3 + learnedFuelBurn * 0.7) * 100) / 100
+      : Math.round(baseFuelBurnPerLapLiters * habitFuelMult * 100) / 100;
 
   const lapsOfFuelLeft = Math.max(
     0.4,
@@ -405,150 +452,222 @@ export function computePitStrategy(
     options?.trackCondition === 'hot' || maxTireTemp > car.optimalTireTempRange[1] + 5;
   const isCool = options?.trackCondition === 'cool';
 
+  const currentCompound: PitStrategyPlan['currentCompound'] = isDamp
+    ? 'Wet'
+    : isHot && resolvedRaceMode === 'endurance'
+      ? 'Hard'
+      : detectedSessionType === 'qualifying' && !profile.isNewToGame
+        ? 'Soft'
+        : 'Medium';
+
+  const getWearPerLapPct = (cmp: PitStrategyPlan['currentCompound']): number => {
+    const longCircuit = track.lengthKm > 9;
+    const base =
+      cmp === 'Soft'
+        ? longCircuit ? 5.6 : 3.6
+        : cmp === 'Hard'
+          ? longCircuit ? 2.2 : 1.5
+          : cmp === 'Wet'
+            ? longCircuit ? 4.2 : 2.8
+            : longCircuit ? 3.5 : 2.3;
+    const heatMult = isHot ? 1.15 : isCool ? 0.92 : 1.0;
+    return Math.round(base * heatMult * 10) / 10;
+  };
+
+  const baseCurrentWearRate = getWearPerLapPct(currentCompound);
+  const habitWearMult =
+    profile.habits.lockupCount >= 3
+      ? 1.24
+      : profile.habits.lockupCount >= 2 || profile.habits.exitSnapCount >= 2
+        ? 1.12
+        : profile.habits.lapsAnalyzed >= 3 &&
+            profile.habits.brakingConsistencyPct >= 90 &&
+            profile.habits.lockupCount === 0 &&
+            profile.habits.exitSnapCount === 0
+          ? 0.9
+          : 1.0;
+  const adjustedBaseWearRate = baseCurrentWearRate * habitWearMult;
+  const learnedWearRate = profile.habits.observedWearPerLapPct;
+  const observedWearRate =
+    frame.lapNumber > 1 && 100 - minTireWear > 1.2
+      ? (100 - minTireWear) / Math.max(1, frame.lapNumber - 1 + frame.lapDistPct)
+      : adjustedBaseWearRate;
+  const effectiveWearPerLap =
+    typeof learnedWearRate === 'number' && learnedWearRate > 0.2
+      ? Math.round((adjustedBaseWearRate * 0.3 + learnedWearRate * 0.45 + observedWearRate * 0.25) * 10) / 10
+      : Math.round((adjustedBaseWearRate * 0.55 + observedWearRate * 0.45) * 10) / 10;
+
+  const projectWearAtLap = (startWear: number, startLapNum: number, targetLapNum: number, rate: number) =>
+    Math.max(35, Math.min(100, Math.round(startWear - Math.max(0, targetLapNum - startLapNum) * rate)));
+
+  const projectedNoStopFlagWear = projectWearAtLap(
+    minTireWear,
+    frame.lapNumber,
+    effectiveRaceLengthLaps,
+    effectiveWearPerLap
+  );
+
   const autoSelectEnabled = options?.autoSelectPitTires ?? true;
   const manualOverride = !autoSelectEnabled ? options?.pitTireOverride ?? 'auto' : 'auto';
 
-  let tireAction: PitStrategyPlan['tireAction'] = 'fuel_only';
-  let tireCompound: PitStrategyPlan['tireCompound'] = 'Medium';
-  let tireSelectionReason = '';
-  let tireAutoSelected = autoSelectEnabled || manualOverride === 'auto';
+  let autoTireAction: PitStrategyPlan['tireAction'] = 'fuel_only';
+  let autoTireCompound: PitStrategyPlan['tireCompound'] = 'Medium';
+  let autoTireSelectionReason = '';
 
-  if (manualOverride !== 'auto') {
-    tireAutoSelected = false;
-    switch (manualOverride) {
-      case 'keep':
-        tireAction = 'fuel_only';
-        tireCompound = 'Medium';
-        tireSelectionReason = 'Manual override: keeping current tires to save ~12s in pit lane.';
-        break;
-      case 'fronts_medium':
-        tireAction = 'change_fronts';
-        tireCompound = 'Medium';
-        tireSelectionReason = 'Manual override: changing 2 front Medium tires (~7s stop).';
-        break;
-      case 'all_soft':
-        tireAction = 'change_all';
-        tireCompound = 'Soft';
-        tireSelectionReason = 'Manual override: fitting 4x Soft tires for maximum short-stint grip.';
-        break;
-      case 'all_hard':
-        tireAction = 'change_all';
-        tireCompound = 'Hard';
-        tireSelectionReason = 'Manual override: fitting 4x Hard tires for maximum thermal durability.';
-        break;
-      case 'all_wet':
-        tireAction = 'change_all';
-        tireCompound = 'Wet';
-        tireSelectionReason = 'Manual override: fitting 4x Wet tires for damp/rain track.';
-        break;
-      case 'all_medium':
-      default:
-        tireAction = 'change_all';
-        tireCompound = 'Medium';
-        tireSelectionReason = 'Manual override: fitting 4x Medium tires.';
-        break;
-    }
-  } else if (isDamp) {
-    tireAction = 'change_all';
-    tireCompound = 'Wet';
-    tireSelectionReason = crashAlertActive
+  if (isDamp) {
+    autoTireAction = 'change_all';
+    autoTireCompound = 'Wet';
+    autoTireSelectionReason = crashAlertActive
       ? 'Crash on damp track — BOX NOW: enable Repairs ON and fit 4x Wet tires in LMU Pit MFD.'
       : 'Damp track detected — recommended 4x Wet tires to prevent cold-slick aquaplaning.';
   } else if (crashAlertActive) {
-    tireAction = 'change_all';
+    autoTireAction = 'change_all';
     if (detectedSessionType === 'qualifying') {
-      tireCompound = profile.isNewToGame || isHot ? 'Medium' : 'Soft';
-      tireSelectionReason = `Crash in Qualifying — Box NOW for Repairs ON + fresh 4x ${tireCompound} (or Esc to Garage if time permits) before next push lap.`;
+      autoTireCompound = profile.isNewToGame || isHot ? 'Medium' : 'Soft';
+      autoTireSelectionReason = `Crash in Qualifying — Box NOW for Repairs ON + fresh 4x ${autoTireCompound} (or Esc to Garage if time permits) before next push lap.`;
     } else if (detectedSessionType === 'practice') {
-      tireCompound = 'Medium';
-      tireSelectionReason = `Crash in Practice — Box this lap (or Esc to Garage) to repair damage and load fresh 4x Medium without losing race time.`;
-    } else if (resolvedRaceMode === 'endurance' && isHot) {
-      tireCompound = 'Hard';
-      tireSelectionReason = `Impact detected in hot Endurance stint — BOX THIS LAP: set Repairs ON and 4x Hard in LMU Pit MFD.`;
+      autoTireCompound = 'Medium';
+      autoTireSelectionReason = `Crash in Practice — Box this lap (or Esc to Garage) to repair damage and load fresh 4x Medium without losing race time.`;
+    } else if (
+      (resolvedRaceMode === 'endurance' && isHot) ||
+      (remainingRaceLaps >= 18 && isHot && !profile.isNewToGame)
+    ) {
+      autoTireCompound = 'Hard';
+      autoTireSelectionReason = `Impact detected in hot long stint — BOX THIS LAP: Repairs ON and best durability compound 4x Hard in LMU Pit MFD.`;
+    } else if (
+      !profile.isNewToGame &&
+      remainingRaceLaps <= 5 &&
+      !isHot &&
+      profile.habits.lockupCount < 3
+    ) {
+      autoTireCompound = 'Soft';
+      autoTireSelectionReason = `Crash in final ${Math.ceil(remainingRaceLaps)}-lap sprint — BOX THIS LAP: Repairs ON and fit fastest 4x Soft recovery tires.`;
     } else {
-      tireCompound = 'Medium';
-      tireSelectionReason = `Crash / puncture detected — BOX THIS LAP: enable Repairs ON and fit fresh 4x Medium so flat-spots or suspension damage don't wreck your stint.`;
+      autoTireCompound = 'Medium';
+      autoTireSelectionReason = `Crash / puncture detected — BOX THIS LAP: enable Repairs ON and fit optimal 4x Medium so flat-spots or suspension damage don't wreck your stint.`;
     }
   } else if (resolvedRaceMode === 'practice_quali') {
     if (detectedSessionType === 'warmup') {
-      tireAction = 'change_all';
-      tireCompound = isHot ? 'Hard' : 'Medium';
-      tireSelectionReason = `Warmup shakedown — recommended 4x ${tireCompound} with full-tank bias to test race-start grip.`;
+      autoTireAction = 'change_all';
+      autoTireCompound = isHot ? 'Hard' : 'Medium';
+      autoTireSelectionReason = `Warmup shakedown — recommended 4x ${autoTireCompound} with full-tank bias to test race-start grip.`;
     } else if (detectedSessionType === 'practice') {
-      tireAction = 'change_all';
-      tireCompound = isHot || profile.isNewToGame ? 'Medium' : 'Soft';
-      tireSelectionReason = `Practice session detected — 4x ${tireCompound} gives repeatable setup & brake-mark runs (no position penalty to pit).`;
+      autoTireAction = 'change_all';
+      autoTireCompound = isHot || profile.isNewToGame ? 'Medium' : 'Soft';
+      autoTireSelectionReason = `Practice session detected — 4x ${autoTireCompound} gives repeatable setup & brake-mark runs (no position penalty to pit).`;
     } else {
-      tireAction = 'change_all';
-      tireCompound = profile.isNewToGame || isHot ? 'Medium' : 'Soft';
-      tireSelectionReason =
-        tireCompound === 'Soft'
+      autoTireAction = 'change_all';
+      autoTireCompound = profile.isNewToGame || isHot ? 'Medium' : 'Soft';
+      autoTireSelectionReason =
+        autoTireCompound === 'Soft'
           ? 'Qualifying session — 4x Soft + low fuel recommended for peak single-lap grip.'
           : isHot
             ? 'Hot Qualifying surface — 4x Medium avoids overheating in sector 3.'
             : 'Qualifying newcomer safety — 4x Medium for predictable cold out-lap warmup.';
     }
   } else if (resolvedRaceMode === 'short_online') {
-    if (minTireWear >= 72 && profile.habits.lockupCount < 3) {
-      tireAction = 'fuel_only';
-      tireCompound = 'Medium';
-      tireSelectionReason = `Short online race (${Math.round(minTireWear)}% rubber left) — keep current tires (0s) so you do not lose ~12s in pits.`;
+    const heavyLearnedWear = typeof learnedWearRate === 'number' && learnedWearRate >= 5.2 && projectedNoStopFlagWear < 64;
+    if (minTireWear >= 72 && profile.habits.lockupCount < 3 && !heavyLearnedWear) {
+      autoTireAction = 'fuel_only';
+      autoTireCompound = 'Medium';
+      autoTireSelectionReason = `Short casual race (${effectiveRaceLengthLaps} laps, ${Math.round(minTireWear)}% rubber) — no tire change needed (0s); keep tires to the flag unless you get damage.`;
     } else if (frontMinWear < 78 && rearMinWear >= 82) {
-      tireAction = 'change_fronts';
-      tireCompound = 'Medium';
-      tireSelectionReason = `Short online sprint — fronts worn to ${Math.round(frontMinWear)}% while rears are ${Math.round(rearMinWear)}%; 2x Front Medium (~7s) fixes turn-in fast.`;
+      autoTireAction = 'change_fronts';
+      autoTireCompound = 'Medium';
+      autoTireSelectionReason = `Short online sprint — fronts worn to ${Math.round(frontMinWear)}% while rears are ${Math.round(rearMinWear)}%; 2x Front Medium (~7s) fixes turn-in fast.`;
     } else {
-      tireAction = 'change_all';
-      tireCompound =
+      autoTireAction = 'change_all';
+      autoTireCompound =
         !profile.isNewToGame && remainingRaceLaps <= 4 && isCool ? 'Soft' : 'Medium';
-      tireSelectionReason =
-        profile.habits.lockupCount >= 3
-          ? `Short online race with ${profile.habits.lockupCount} lockups — recommended 4x ${tireCompound} to clear flat-spots safely.`
-          : `Short online race (${Math.round(minTireWear)}% min wear) — recommended 4x ${tireCompound} for reliable grip to the flag.`;
+      autoTireSelectionReason =
+        profile.habits.lockupCount >= 3 || heavyLearnedWear
+          ? `Short online race with ${profile.habits.lockupCount} lockups / ${effectiveWearPerLap.toFixed(1)}%/lap wear — switched to 4x ${autoTireCompound} to clear flat-spots safely.`
+          : `Short online race (${Math.round(minTireWear)}% min wear) — recommended 4x ${autoTireCompound} for reliable grip to the flag.`;
     }
   } else if (resolvedRaceMode === 'endurance') {
     if (minTireWear < 85 || profile.habits.lockupCount >= 2 || remainingRaceLaps >= 16) {
-      tireAction = 'change_all';
+      autoTireAction = 'change_all';
     } else if (frontMinWear < 89 && rearMinWear >= 89) {
-      tireAction = 'change_fronts';
+      autoTireAction = 'change_fronts';
     } else {
-      tireAction = 'fuel_only';
+      autoTireAction = 'fuel_only';
     }
-    tireCompound = isHot || (remainingRaceLaps >= 20 && !profile.isNewToGame) ? 'Hard' : 'Medium';
-    tireSelectionReason =
-      tireAction === 'fuel_only'
+    autoTireCompound = isHot || (remainingRaceLaps >= 20 && !profile.isNewToGame) ? 'Hard' : 'Medium';
+    autoTireSelectionReason =
+      autoTireAction === 'fuel_only'
         ? `Endurance double-stint (${Math.round(minTireWear)}% wear) — keeping tires saves ~12s at pit exit.`
-        : tireCompound === 'Hard'
-          ? `Endurance hot/long stint (${Math.round(remainingRaceLaps)} laps left) — recommended ${tireAction === 'change_fronts' ? '2x Front' : '4x'} Hard for thermal life.`
-          : `Endurance stint — recommended ${tireAction === 'change_fronts' ? '2x Front' : '4x'} Medium for consistent pace over double stints.`;
+        : autoTireCompound === 'Hard'
+          ? `Endurance hot/long stint (${Math.round(remainingRaceLaps)} laps left) — recommended ${autoTireAction === 'change_fronts' ? '2x Front' : '4x'} Hard for thermal life.`
+          : `Endurance stint — recommended ${autoTireAction === 'change_fronts' ? '2x Front' : '4x'} Medium for consistent pace over double stints.`;
   } else {
     // standard_online
     if (minTireWear < 82 || profile.habits.lockupCount >= 2 || (remainingRaceLaps > 10 && minTireWear < 86)) {
-      tireAction = 'change_all';
+      autoTireAction = 'change_all';
     } else if (frontMinWear < 88 && rearMinWear >= 88) {
-      tireAction = 'change_fronts';
+      autoTireAction = 'change_fronts';
     } else {
-      tireAction = 'fuel_only';
+      autoTireAction = 'fuel_only';
     }
 
     if (isHot && remainingRaceLaps >= 11 && !profile.isNewToGame) {
-      tireCompound = 'Hard';
+      autoTireCompound = 'Hard';
     } else if (!profile.isNewToGame && profile.primaryGoal !== 'consistency' && remainingRaceLaps <= 6 && !isHot) {
-      tireCompound = 'Soft';
+      autoTireCompound = 'Soft';
     } else {
-      tireCompound = 'Medium';
+      autoTireCompound = 'Medium';
     }
 
-    tireSelectionReason =
-      tireAction === 'fuel_only'
+    autoTireSelectionReason =
+      autoTireAction === 'fuel_only'
         ? `Normal online race (${Math.round(minTireWear)}% wear) — keeping current tires saves ~12s in pits.`
-        : tireAction === 'change_fronts'
-          ? `Normal online race — fronts at ${Math.round(frontMinWear)}%; 2x Front ${tireCompound} (~7s) restores turn-in without full stop loss.`
-          : tireCompound === 'Soft'
+        : autoTireAction === 'change_fronts'
+          ? `Normal online race — fronts at ${Math.round(frontMinWear)}%; 2x Front ${autoTireCompound} (~7s) restores turn-in without full stop loss.`
+          : autoTireCompound === 'Soft'
             ? `Final ${Math.ceil(remainingRaceLaps)}-lap sprint — recommended 4x Soft for maximum attacking grip.`
-            : tireCompound === 'Hard'
+            : autoTireCompound === 'Hard'
               ? `Hot normal-distance stint — recommended 4x Hard to prevent late-stint blistering.`
               : `Normal online race — recommended 4x Medium for balanced warmup and grip (${Math.round(minTireWear)}% old wear).`;
+  }
+
+  let tireAction: PitStrategyPlan['tireAction'] = autoTireAction;
+  let tireCompound: PitStrategyPlan['tireCompound'] = autoTireCompound;
+  let tireSelectionReason = autoTireSelectionReason;
+  const tireAutoSelected = autoSelectEnabled || manualOverride === 'auto';
+
+  if (!tireAutoSelected) {
+    switch (manualOverride) {
+      case 'keep':
+        tireAction = 'fuel_only';
+        tireCompound = 'Medium';
+        tireSelectionReason = 'Manual strategy: keeping current tires to save ~12s in pit lane.';
+        break;
+      case 'fronts_medium':
+        tireAction = 'change_fronts';
+        tireCompound = 'Medium';
+        tireSelectionReason = 'Manual strategy: changing 2 front Medium tires (~7s stop).';
+        break;
+      case 'all_soft':
+        tireAction = 'change_all';
+        tireCompound = 'Soft';
+        tireSelectionReason = 'Manual strategy: fitting 4x Soft tires for maximum short-stint grip.';
+        break;
+      case 'all_hard':
+        tireAction = 'change_all';
+        tireCompound = 'Hard';
+        tireSelectionReason = 'Manual strategy: fitting 4x Hard tires for maximum thermal durability.';
+        break;
+      case 'all_wet':
+        tireAction = 'change_all';
+        tireCompound = 'Wet';
+        tireSelectionReason = 'Manual strategy: fitting 4x Wet tires for damp/rain track.';
+        break;
+      case 'all_medium':
+      default:
+        tireAction = 'change_all';
+        tireCompound = 'Medium';
+        tireSelectionReason = 'Manual strategy: fitting 4x Medium tires.';
+        break;
+    }
   }
 
   const pitTireCallHeadline =
@@ -631,6 +750,400 @@ export function computePitStrategy(
           ? `MFD Box Lap ${recommendedPitLap} (${raceModeLabel}): VE ${Math.round(frame.virtualEnergyPct ?? 0)}% limits stint (~${lapsOfVeLeft.toFixed(1)} laps). Set 100% VE + ${fuelToAddLiters.toFixed(0)}L, ${tireLabel}, repairs OFF.`
           : `MFD Box Lap ${recommendedPitLap} (${raceModeLabel}): ${fuelToAddLiters.toFixed(0)}L${isHypercar ? ' + 100% VE' : ''}, ${tireLabel}, repairs OFF unless damaged.`;
 
+  const lapsToCliff = Math.max(0, (minTireWear - 68) / Math.max(0.5, effectiveWearPerLap));
+  const rawCliffLap = Math.round(frame.lapNumber + lapsToCliff);
+  const estimatedCliffLap =
+    rawCliffLap <= effectiveRaceLengthLaps + 2 && minTireWear < 99.5 ? rawCliffLap : rawCliffLap <= effectiveRaceLengthLaps ? rawCliffLap : null;
+
+  const pitNeededThisRace = Boolean(
+    crashAlertActive ||
+      resolvedRaceMode === 'practice_quali' ||
+      effectiveStintLapsLeft < remainingRaceLaps - 0.15 ||
+      tireAction !== 'fuel_only'
+  );
+
+  const pitWindowStartLap = crashAlertActive
+    ? frame.lapNumber
+    : Math.max(frame.lapNumber, recommendedPitLap - 1);
+  const pitWindowEndLap = crashAlertActive
+    ? frame.lapNumber
+    : Math.min(effectiveRaceLengthLaps - 1, recommendedPitLap + 1);
+
+  const pitLaneTransitSec = track.lengthKm > 9 ? 16 : 13;
+  const pitLaneLossTotalSec = pitLaneTransitSec + pitStopDurationEstSec;
+
+  const estimatedWearAtPitPct = projectWearAtLap(
+    minTireWear,
+    frame.lapNumber,
+    recommendedPitLap,
+    effectiveWearPerLap
+  );
+
+  const buildStintsForPlan = (params: {
+    pitRequired: boolean;
+    pitLap: number | null;
+    nextAction: 'change_all' | 'fuel_only' | 'change_fronts';
+    nextCmp: PitStrategyPlan['currentCompound'];
+    headline: string;
+  }): { stints: PitStintSegment[]; finishWear: number } => {
+    if (!params.pitRequired || params.pitLap === null) {
+      const finishWear = projectWearAtLap(
+        minTireWear,
+        frame.lapNumber,
+        effectiveRaceLengthLaps,
+        effectiveWearPerLap
+      );
+      return {
+        finishWear,
+        stints: [
+          {
+            stintNumber: 1,
+            startLap: 1,
+            endLap: effectiveRaceLengthLaps,
+            compound: currentCompound,
+            actionLabel: 'To Flag · No Stop',
+            isCurrent: true,
+            isPitStopBefore: false,
+            estimatedWearAtEndPct: finishWear,
+          },
+        ],
+      };
+    }
+
+    const pLap = Math.max(frame.lapNumber, Math.min(effectiveRaceLengthLaps - 1, params.pitLap));
+    const wearAtPit = projectWearAtLap(minTireWear, frame.lapNumber, pLap, effectiveWearPerLap);
+    const stint2StartWear =
+      params.nextAction === 'fuel_only'
+        ? wearAtPit
+        : params.nextAction === 'change_fronts'
+          ? Math.min(100, Math.round((100 + Math.max(55, rearMinWear - Math.max(0, pLap - frame.lapNumber) * effectiveWearPerLap * 0.7)) / 2))
+          : 100;
+    const stint2Rate = getWearPerLapPct(params.nextAction === 'fuel_only' ? currentCompound : params.nextCmp);
+    const finishWear = projectWearAtLap(stint2StartWear, pLap, effectiveRaceLengthLaps, stint2Rate);
+
+    return {
+      finishWear,
+      stints: [
+        {
+          stintNumber: 1,
+          startLap: 1,
+          endLap: pLap,
+          compound: currentCompound,
+          actionLabel: `Current · ${currentCompound}`,
+          isCurrent: true,
+          isPitStopBefore: false,
+          estimatedWearAtEndPct: wearAtPit,
+        },
+        {
+          stintNumber: 2,
+          startLap: pLap,
+          endLap: effectiveRaceLengthLaps,
+          compound: params.nextAction === 'fuel_only' ? currentCompound : params.nextCmp,
+          actionLabel: params.headline,
+          isCurrent: false,
+          isPitStopBefore: true,
+          pitLap: pLap,
+          estimatedWearAtEndPct: finishWear,
+        },
+      ],
+    };
+  };
+
+  const activeStintBuild = buildStintsForPlan({
+    pitRequired: pitNeededThisRace,
+    pitLap: pitNeededThisRace ? recommendedPitLap : null,
+    nextAction: tireAction,
+    nextCmp: tireCompound,
+    headline: pitTireCallHeadline,
+  });
+  const activeStints = activeStintBuild.stints;
+  const estimatedWearAtFlagPct = activeStintBuild.finishWear;
+
+  const rejoinCars = (frame.opponents ?? [])
+    .filter(
+      (o) =>
+        !o.inPits &&
+        o.gapSeconds < 0 &&
+        Math.abs(o.gapSeconds) <= pitLaneLossTotalSec + 3 &&
+        Math.abs(o.gapSeconds) >= Math.max(3, pitLaneLossTotalSec - 14)
+    )
+    .sort((a, b) => Math.abs(a.gapSeconds) - Math.abs(b.gapSeconds))
+    .slice(0, 2);
+
+  const rejoinTrafficNote = !pitNeededThisRace
+    ? `No pit needed — save ~${pitLaneTransitSec + 12}s pit lane loss.`
+    : rejoinCars.length > 0
+      ? `Rejoin window (~${pitLaneLossTotalSec}s loss): Traffic near #${rejoinCars
+          .map((c) => `${c.carNumber} (${c.gapSeconds.toFixed(1)}s)`)
+          .join(' & ')}`
+      : `Rejoin window (~${pitLaneLossTotalSec}s total loss): Clean air predicted at pit exit.`;
+
+  const estimateStopLoss = (action: 'change_all' | 'fuel_only' | 'change_fronts', includeFuel: boolean): number =>
+    pitLaneTransitSec +
+    (repairsRecommended ? 14 : 0) +
+    (includeFuel ? 6 + Math.round(fuelToAddLiters * 0.25) : 0) +
+    (action === 'change_all' ? 12 : action === 'change_fronts' ? 7 : 0);
+
+  const strategyOptions: PitStrategyOption[] = [];
+
+  // Plan Auto always reflects the engineer's live dynamic AI strategy across match length, crash/weather, and driver learning
+  const hasLearnedFuelShift =
+    typeof learnedFuelBurn === 'number' &&
+    (learnedFuelBurn > baseFuelBurnPerLapLiters * 1.12 ||
+      learnedFuelBurn < baseFuelBurnPerLapLiters * 0.9);
+  const hasLearnedWearShift =
+    profile.habits.lockupCount >= 2 ||
+    (typeof learnedWearRate === 'number' && learnedWearRate > baseCurrentWearRate * 1.2) ||
+    (profile.habits.lapsAnalyzed >= 3 &&
+      profile.habits.brakingConsistencyPct >= 90 &&
+      profile.habits.lockupCount === 0 &&
+      profile.habits.exitSnapCount === 0);
+  const isDriverAdapted = hasLearnedFuelShift || hasLearnedWearShift;
+
+  const autoPitNeeded = Boolean(
+    crashAlertActive ||
+      resolvedRaceMode === 'practice_quali' ||
+      effectiveStintLapsLeft < remainingRaceLaps - 0.15 ||
+      autoTireAction !== 'fuel_only'
+  );
+  const autoPitTireHeadline =
+    autoTireAction === 'change_all'
+      ? `4x ${autoTireCompound}`
+      : autoTireAction === 'change_fronts'
+        ? `2x Front ${autoTireCompound} (~7s)`
+        : 'Keep Tires (0s)';
+  const autoPlanLoss = autoPitNeeded
+    ? estimateStopLoss(autoTireAction, fuelToAddLiters > 0 || effectiveStintLapsLeft < remainingRaceLaps - 0.15)
+    : 0;
+  const planAutoStints = buildStintsForPlan({
+    pitRequired: autoPitNeeded,
+    pitLap: autoPitNeeded ? recommendedPitLap : null,
+    nextAction: autoTireAction,
+    nextCmp: autoTireCompound,
+    headline: autoPitTireHeadline,
+  });
+  strategyOptions.push({
+    id: 'plan_auto',
+    code: 'Plan Auto',
+    name: crashAlertActive
+      ? 'Box Now · Repair'
+      : isDamp
+        ? 'Rain Auto · 4x Wet'
+        : !autoPitNeeded
+          ? `No-Stop · ${effectiveRaceLengthLaps}L Match`
+          : isDriverAdapted
+            ? 'Adaptive · Re-Timed'
+            : resolvedRaceMode === 'practice_quali'
+              ? 'Dynamic Run Plan'
+              : 'Dynamic Balanced',
+    tag: crashAlertActive ? 'Emergency' : 'Dynamic AI',
+    pitRequired: autoPitNeeded,
+    pitLap: autoPitNeeded ? recommendedPitLap : null,
+    pitWindowStartLap: autoPitNeeded ? pitWindowStartLap : null,
+    pitWindowEndLap: autoPitNeeded ? pitWindowEndLap : null,
+    nextTireAction: autoTireAction,
+    nextCompound: autoTireCompound,
+    nextTireHeadline: autoPitTireHeadline,
+    pitTireOverride: 'auto',
+    autoSelectPitTires: true,
+    stopLossSec: autoPlanLoss,
+    deltaToOptimalSec: 0,
+    projectedFinishWearPct: planAutoStints.finishWear,
+    rationale: autoTireSelectionReason,
+    stints: planAutoStints.stints,
+  });
+
+  // Plan A: Fixed Standard Baseline (4x Medium)
+  const planALoss = estimateStopLoss('change_all', fuelToAddLiters > 0 || autoPitNeeded);
+  const planAStints = buildStintsForPlan({
+    pitRequired: true,
+    pitLap: recommendedPitLap,
+    nextAction: 'change_all',
+    nextCmp: 'Medium',
+    headline: '4x Medium',
+  });
+  strategyOptions.push({
+    id: 'plan_a',
+    code: 'Plan A',
+    name: crashAlertActive
+      ? 'Repair + 4x Medium'
+      : resolvedRaceMode === 'practice_quali'
+        ? 'Baseline 4x Medium'
+        : 'Standard · 4x Medium',
+    tag: 'Recommended',
+    pitRequired: true,
+    pitLap: recommendedPitLap,
+    pitWindowStartLap: pitWindowStartLap,
+    pitWindowEndLap: pitWindowEndLap,
+    nextTireAction: 'change_all',
+    nextCompound: 'Medium',
+    nextTireHeadline: '4x Medium',
+    pitTireOverride: 'all_medium',
+    autoSelectPitTires: false,
+    stopLossSec: planALoss,
+    deltaToOptimalSec: autoPitNeeded ? Math.round((planALoss - autoPlanLoss) * 10) / 10 : planALoss,
+    projectedFinishWearPct: planAStints.finishWear,
+    rationale: `Box L${recommendedPitLap} onto 4x Medium for consistent warmup and balanced grip to flag.`,
+    stints: planAStints.stints,
+  });
+
+  // Plan B: Undercut / Aggressive Sprint Option
+  const earlyPitLap = Math.max(frame.lapNumber, Math.min(effectiveRaceLengthLaps - 1, recommendedPitLap - 1));
+  const planBCmp: PitStrategyPlan['currentCompound'] = isDamp
+    ? 'Wet'
+    : 'Soft';
+  const planBAction: 'change_all' | 'change_fronts' =
+    resolvedRaceMode === 'short_online' && !crashAlertActive && !isDamp && minTireWear >= 70
+      ? 'change_fronts'
+      : 'change_all';
+  const planBActualCmp = planBAction === 'change_fronts' ? 'Medium' : planBCmp;
+  const planBOverride: PitTireOverride =
+    planBAction === 'change_fronts'
+      ? 'fronts_medium'
+      : planBActualCmp === 'Wet'
+        ? 'all_wet'
+        : 'all_soft';
+  const planBHeadline =
+    planBAction === 'change_fronts'
+      ? '2x Front Medium (~7s)'
+      : `4x ${planBActualCmp}`;
+  const planBLoss = estimateStopLoss(planBAction, fuelToAddLiters > 0 || autoPitNeeded);
+  const planBStints = buildStintsForPlan({
+    pitRequired: true,
+    pitLap: earlyPitLap,
+    nextAction: planBAction,
+    nextCmp: planBActualCmp,
+    headline: planBHeadline,
+  });
+  strategyOptions.push({
+    id: 'plan_b',
+    code: 'Plan B',
+    name: crashAlertActive
+      ? 'Repair + 4x Soft Attack'
+      : isDamp
+        ? 'Rain Box · 4x Wet'
+        : resolvedRaceMode === 'practice_quali'
+          ? 'Quali Flyer (4x Soft)'
+          : planBAction === 'change_fronts'
+            ? 'Quick 2-Tire Fronts'
+            : 'Undercut · 4x Soft',
+    tag: planBAction === 'change_fronts' ? 'Aggressive' : 'Undercut',
+    pitRequired: true,
+    pitLap: earlyPitLap,
+    pitWindowStartLap: Math.max(frame.lapNumber, earlyPitLap - 1),
+    pitWindowEndLap: earlyPitLap,
+    nextTireAction: planBAction,
+    nextCompound: planBActualCmp,
+    nextTireHeadline: planBHeadline,
+    pitTireOverride: planBOverride,
+    autoSelectPitTires: false,
+    stopLossSec: planBLoss,
+    deltaToOptimalSec: autoPitNeeded ? Math.round((planBLoss - autoPlanLoss - 1.4) * 10) / 10 : Math.round((planBLoss - 1.5) * 10) / 10,
+    projectedFinishWearPct: planBStints.finishWear,
+    rationale:
+      planBAction === 'change_fronts'
+        ? `7s front-only swap restores turn-in bite in ${Math.round(remainingRaceLaps)} laps without full 4-tire loss.`
+        : `Box L${earlyPitLap} onto 4x ${planBActualCmp} for ~0.5s/lap fresh-rubber undercut pace.`,
+    stints: planBStints.stints,
+  });
+
+  // Plan C: Safe Long / Track Position Option (disjoint from Plan A's all_medium)
+  const latePitLap = Math.max(frame.lapNumber, Math.min(effectiveRaceLengthLaps - 1, recommendedPitLap + 1));
+  const planCUseKeep =
+    autoPitNeeded &&
+    !crashAlertActive &&
+    !isDamp &&
+    autoTireAction !== 'fuel_only' &&
+    minTireWear >= 76 &&
+    resolvedRaceMode !== 'practice_quali';
+  const planCAction: 'change_all' | 'fuel_only' = planCUseKeep ? 'fuel_only' : 'change_all';
+  const planCCmp: PitStrategyPlan['currentCompound'] = planCUseKeep
+    ? currentCompound
+    : 'Hard';
+  const planCOverride: PitTireOverride = planCUseKeep ? 'keep' : 'all_hard';
+  const planCHeadline = planCUseKeep ? 'Keep Tires (0s)' : '4x Hard';
+  const planCLoss = estimateStopLoss(planCAction, true);
+  const planCStints = buildStintsForPlan({
+    pitRequired: true,
+    pitLap: latePitLap,
+    nextAction: planCAction,
+    nextCmp: planCCmp,
+    headline: planCHeadline,
+  });
+  strategyOptions.push({
+    id: 'plan_c',
+    code: 'Plan C',
+    name: planCUseKeep
+      ? 'Fuel-Only · Overcut'
+      : resolvedRaceMode === 'practice_quali'
+        ? 'Long Run (4x Hard)'
+        : 'Endurance 4x Hard',
+    tag: planCUseKeep ? 'Track Pos' : 'Safe Long',
+    pitRequired: true,
+    pitLap: latePitLap,
+    pitWindowStartLap: latePitLap,
+    pitWindowEndLap: Math.min(effectiveRaceLengthLaps - 1, latePitLap + 1),
+    nextTireAction: planCAction,
+    nextCompound: planCCmp,
+    nextTireHeadline: planCHeadline,
+    pitTireOverride: planCOverride,
+    autoSelectPitTires: false,
+    stopLossSec: planCLoss,
+    deltaToOptimalSec: autoPitNeeded ? Math.round((planCLoss - autoPlanLoss) * 10) / 10 : planCLoss,
+    projectedFinishWearPct: planCStints.finishWear,
+    rationale: planCUseKeep
+      ? `Stretch to L${latePitLap} and skip tire change (0s) to jump cars in pit lane.`
+      : `Full 4x Hard swap guarantees zero thermal drop-off to the checkered flag.`,
+    stints: planCStints.stints,
+  });
+
+  const matchedManualOption = !tireAutoSelected
+    ? strategyOptions.find((opt) => !opt.autoSelectPitTires && opt.pitTireOverride === manualOverride)
+    : undefined;
+
+  const finalRecommendedPitLap = matchedManualOption?.pitLap ?? recommendedPitLap;
+  const finalPitWindowStartLap = matchedManualOption?.pitWindowStartLap ?? pitWindowStartLap;
+  const finalPitWindowEndLap = matchedManualOption?.pitWindowEndLap ?? pitWindowEndLap;
+  const finalActiveStints = matchedManualOption?.stints ?? activeStints;
+  const finalEstimatedWearAtFlagPct = matchedManualOption?.projectedFinishWearPct ?? estimatedWearAtFlagPct;
+
+  const adaptationParts: string[] = [];
+  if (
+    typeof learnedFuelBurn === 'number' &&
+    learnedFuelBurn > baseFuelBurnPerLapLiters * 1.12
+  ) {
+    adaptationParts.push(
+      `learned higher fuel burn (${fuelBurnPerLapLiters.toFixed(1)}L/lap) — box target L${finalRecommendedPitLap}`
+    );
+  } else if (
+    typeof learnedFuelBurn === 'number' &&
+    learnedFuelBurn < baseFuelBurnPerLapLiters * 0.9
+  ) {
+    adaptationParts.push(
+      `learned smooth fuel saving (${fuelBurnPerLapLiters.toFixed(1)}L/lap) — extending stint`
+    );
+  }
+  if (
+    profile.habits.lockupCount >= 2 ||
+    (typeof learnedWearRate === 'number' && learnedWearRate > baseCurrentWearRate * 1.2)
+  ) {
+    adaptationParts.push(
+      `learned higher tire wear (${effectiveWearPerLap.toFixed(1)}%/lap${
+        profile.habits.lockupCount >= 2 ? `, ${profile.habits.lockupCount}x lockups` : ''
+      }) — ${pitTireCallHeadline}`
+    );
+  } else if (
+    profile.habits.lapsAnalyzed >= 3 &&
+    profile.habits.brakingConsistencyPct >= 90 &&
+    profile.habits.lockupCount === 0 &&
+    profile.habits.exitSnapCount === 0 &&
+    tireAction === 'fuel_only'
+  ) {
+    adaptationParts.push('learned clean braking & tire care — stretching stint on current rubber');
+  }
+  const learnedAdaptationNote =
+    adaptationParts.length > 0 ? `Adapted from your driving: ${adaptationParts.join('; ')}.` : null;
+
   return {
     raceLengthLaps: effectiveRaceLengthLaps,
     currentLap: frame.lapNumber,
@@ -639,7 +1152,7 @@ export function computePitStrategy(
     lapsOfFuelLeft,
     ...(lapsOfVeLeft !== undefined ? { lapsOfVeLeft } : {}),
     stintLimitingFactor,
-    recommendedPitLap,
+    recommendedPitLap: finalRecommendedPitLap,
     fuelToAddLiters,
     tireAction,
     tireCompound,
@@ -659,6 +1172,257 @@ export function computePitStrategy(
     pitStopDurationEstSec,
     setupAdjustmentsAtPit,
     engineerSummary,
+    currentCompound,
+    pitWindowStartLap: finalPitWindowStartLap,
+    pitWindowEndLap: finalPitWindowEndLap,
+    pitNeededThisRace,
+    estimatedWearAtPitPct,
+    estimatedWearAtFlagPct: finalEstimatedWearAtFlagPct,
+    estimatedCliffLap,
+    pitLaneLossTotalSec,
+    rejoinTrafficNote,
+    learnedAdaptationNote,
+    activeStints: finalActiveStints,
+    strategyOptions,
+  };
+}
+
+export interface PitStrategyVoiceState {
+  lastNotifiedPitWindowKey: string | null;
+  lastNotifiedBoxLapKey: string | null;
+  lastNotifiedPlanSignature: string | null;
+  lastNotifiedNoStopKey: string | null;
+  lastAlertAtMs: number;
+}
+
+export function createInitialPitStrategyVoiceState(): PitStrategyVoiceState {
+  return {
+    lastNotifiedPitWindowKey: null,
+    lastNotifiedBoxLapKey: null,
+    lastNotifiedPlanSignature: null,
+    lastNotifiedNoStopKey: null,
+    lastAlertAtMs: 0,
+  };
+}
+
+export interface PitStrategyVoiceEvaluation {
+  callout: CoachCallout | null;
+  nextState: PitStrategyVoiceState;
+  eventType: 'pit_window_open' | 'box_this_lap' | 'learned_strategy_shift' | 'no_stop_reassure' | null;
+}
+
+/**
+ * Pure evaluator that turns live PitStrategyPlan transitions + match length + learned
+ * driver habits into proactive pit radio & Live Voice announcements.
+ */
+export function evaluatePitStrategyVoiceCallout(params: {
+  strategy: PitStrategyPlan;
+  prevStrategy: PitStrategyPlan | null;
+  frame: TelemetryFrame;
+  settings: Pick<CoachSettings, 'voiceEnabled' | 'pitWindowCountdownEnabled'>;
+  voiceState: PitStrategyVoiceState;
+  nowMs?: number;
+  carClass?: string;
+}): PitStrategyVoiceEvaluation {
+  const { strategy, prevStrategy, frame, settings, voiceState } = params;
+  const nowMs = params.nowMs ?? frame.timestampMs ?? Date.now();
+  const planSig = `${strategy.resolvedRaceMode}:${strategy.pitNeededThisRace}:${strategy.pitTireCallHeadline}:${
+    strategy.pitNeededThisRace ? strategy.recommendedPitLap : 'flag'
+  }`;
+
+  if (
+    !settings.voiceEnabled ||
+    !(settings.pitWindowCountdownEnabled ?? true) ||
+    frame.inPitOrGarage ||
+    frame.isPaused ||
+    frame.inFormationLap
+  ) {
+    return {
+      callout: null,
+      eventType: null,
+      nextState: {
+        ...voiceState,
+        lastNotifiedPlanSignature: voiceState.lastNotifiedPlanSignature ?? planSig,
+      },
+    };
+  }
+
+  // Practice/Quali stops are manual unless crash/damage already handled
+  if (
+    strategy.detectedSessionType === 'qualifying' ||
+    strategy.detectedSessionType === 'practice' ||
+    strategy.crashAlertActive
+  ) {
+    return {
+      callout: null,
+      eventType: null,
+      nextState: {
+        ...voiceState,
+        lastNotifiedPlanSignature: planSig,
+      },
+    };
+  }
+
+  const isHypercar = params.carClass === 'Hypercar' || frame.carClass === 'Hypercar';
+  const veClause = isHypercar ? ' + 100% VE' : '';
+  const fuelClause =
+    strategy.fuelToAddLiters > 0 ? `+${strategy.fuelToAddLiters.toFixed(0)}L${veClause}` : `0L${veClause}`;
+
+  // 1. Box This Lap callout on recommendedPitLap approaching pit entry
+  if (
+    strategy.pitNeededThisRace &&
+    frame.lapNumber === strategy.recommendedPitLap &&
+    frame.lapDistPct >= 0.38
+  ) {
+    const boxKey = `${strategy.raceLengthLaps}:${strategy.recommendedPitLap}:${strategy.pitTireCallHeadline}`;
+    if (voiceState.lastNotifiedBoxLapKey !== boxKey) {
+      return {
+        eventType: 'box_this_lap',
+        callout: {
+          id: `pit-box-this-lap-${nowMs}`,
+          timestampMs: nowMs,
+          lapNumber: frame.lapNumber,
+          cornerName: 'Box This Lap',
+          severity: 'warning',
+          category: 'strategy',
+          message: `Box this lap, Lap ${frame.lapNumber} (${strategy.raceModeLabel}) — Pit MFD: ${fuelClause}, ${strategy.pitTireCallHeadline}, repairs OFF unless damaged. Watch pit speed limiter.`,
+          spoken: false,
+          source: 'realtime-engine',
+        },
+        nextState: {
+          ...voiceState,
+          lastNotifiedBoxLapKey: boxKey,
+          lastNotifiedPlanSignature: planSig,
+          lastAlertAtMs: nowMs,
+        },
+      };
+    }
+  }
+
+  // 2. Pit Window Open callout when entering pitWindowStartLap
+  if (
+    strategy.pitNeededThisRace &&
+    frame.lapNumber >= strategy.pitWindowStartLap &&
+    frame.lapNumber < strategy.recommendedPitLap
+  ) {
+    const winKey = `${strategy.raceLengthLaps}:${strategy.pitWindowStartLap}-${strategy.pitWindowEndLap}`;
+    if (
+      voiceState.lastNotifiedPitWindowKey !== winKey &&
+      (voiceState.lastAlertAtMs === 0 || nowMs - voiceState.lastAlertAtMs >= 12000)
+    ) {
+      return {
+        eventType: 'pit_window_open',
+        callout: {
+          id: `pit-window-open-${nowMs}`,
+          timestampMs: nowMs,
+          lapNumber: frame.lapNumber,
+          cornerName: 'Pit Window',
+          severity: 'warning',
+          category: 'strategy',
+          message: `Pit window open L${strategy.pitWindowStartLap}–${strategy.pitWindowEndLap} (${strategy.raceModeLabel}) — target Box Lap ${strategy.recommendedPitLap}: ${strategy.pitTireCallHeadline}, ${fuelClause}.`,
+          spoken: false,
+          source: 'realtime-engine',
+        },
+        nextState: {
+          ...voiceState,
+          lastNotifiedPitWindowKey: winKey,
+          lastNotifiedPlanSignature: planSig,
+          lastAlertAtMs: nowMs,
+        },
+      };
+    }
+  }
+
+  // 3. Learned dynamic strategy shift (driver habits, lockups, wear, or fuel burn altered the plan)
+  const prevPlanSig = prevStrategy
+    ? `${prevStrategy.resolvedRaceMode}:${prevStrategy.pitNeededThisRace}:${prevStrategy.pitTireCallHeadline}:${
+        prevStrategy.pitNeededThisRace ? prevStrategy.recommendedPitLap : 'flag'
+      }`
+    : null;
+  if (
+    prevStrategy &&
+    prevPlanSig !== null &&
+    planSig !== prevPlanSig &&
+    planSig !== voiceState.lastNotifiedPlanSignature &&
+    (voiceState.lastAlertAtMs === 0 || nowMs - voiceState.lastAlertAtMs >= 16000)
+  ) {
+    const tireChanged = prevStrategy.pitTireCallHeadline !== strategy.pitTireCallHeadline;
+    const stopNeededChanged = prevStrategy.pitNeededThisRace !== strategy.pitNeededThisRace;
+    const pitLapMoved =
+      strategy.pitNeededThisRace &&
+      prevStrategy.pitNeededThisRace &&
+      Math.abs(prevStrategy.recommendedPitLap - strategy.recommendedPitLap) >= 1;
+
+    if (tireChanged || stopNeededChanged || pitLapMoved || Boolean(strategy.learnedAdaptationNote)) {
+      const msg = !strategy.pitNeededThisRace
+        ? `Strategy update: ${strategy.learnedAdaptationNote ?? 'fuel and tire wear look strong'} — no pit stop needed now, stay out to the Lap ${strategy.raceLengthLaps} flag.`
+        : `Strategy update (${strategy.raceModeLabel}): ${strategy.learnedAdaptationNote ?? `switching to ${strategy.pitTireCallHeadline}`} Target Box Lap ${strategy.recommendedPitLap} (${fuelClause}).`;
+
+      return {
+        eventType: 'learned_strategy_shift',
+        callout: {
+          id: `pit-learned-shift-${nowMs}`,
+          timestampMs: nowMs,
+          lapNumber: frame.lapNumber,
+          cornerName: 'Strategy Update',
+          severity: 'warning',
+          category: 'strategy',
+          message: msg,
+          spoken: false,
+          source: 'realtime-engine',
+        },
+        nextState: {
+          ...voiceState,
+          lastNotifiedPlanSignature: planSig,
+          lastAlertAtMs: nowMs,
+        },
+      };
+    }
+  }
+
+  // 4. Short casual match reassurance once early in race (e.g. 11-lap casual race = No Stop needed)
+  if (
+    strategy.detectedSessionType === 'race' &&
+    strategy.resolvedRaceMode === 'short_online' &&
+    !strategy.pitNeededThisRace &&
+    frame.lapNumber === 1 &&
+    frame.lapDistPct >= 0.06
+  ) {
+    const noStopKey = `${strategy.raceLengthLaps}:${strategy.resolvedRaceMode}`;
+    if (
+      voiceState.lastNotifiedNoStopKey !== noStopKey &&
+      (voiceState.lastAlertAtMs === 0 || nowMs - voiceState.lastAlertAtMs >= 10000)
+    ) {
+      return {
+        eventType: 'no_stop_reassure',
+        callout: {
+          id: `pit-no-stop-${nowMs}`,
+          timestampMs: nowMs,
+          lapNumber: frame.lapNumber,
+          cornerName: 'Match Strategy',
+          severity: 'warning',
+          category: 'strategy',
+          message: `${strategy.raceLengthLaps}-lap short race detected — fuel and tires are good to the flag. No tire change needed unless you get crash damage.`,
+          spoken: false,
+          source: 'realtime-engine',
+        },
+        nextState: {
+          ...voiceState,
+          lastNotifiedNoStopKey: noStopKey,
+          lastNotifiedPlanSignature: planSig,
+          lastAlertAtMs: nowMs,
+        },
+      };
+    }
+  }
+
+  return {
+    callout: null,
+    eventType: null,
+    nextState: {
+      ...voiceState,
+      lastNotifiedPlanSignature: planSig,
+    },
   };
 }
 

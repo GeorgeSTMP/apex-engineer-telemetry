@@ -35,9 +35,12 @@ import {
   buildAdaptiveElectronicsSuggestions,
   computePitStrategy,
   createDefaultDriverProfile,
+  createInitialPitStrategyVoiceState,
   evaluateAutonomyAction,
+  evaluatePitStrategyVoiceCallout,
   recordCornerLearningFromLap,
   recordDriverObservation,
+  type PitStrategyVoiceState,
 } from './engine/driverLearning';
 import {
   createInitialOpponents,
@@ -77,6 +80,7 @@ import type {
   HardwareInputState,
   LapRecord,
   PitMfdSyncStatus,
+  PitStrategyPlan,
   RaceReport,
   RadioProtocol,
   SimConnectionStatus,
@@ -543,16 +547,41 @@ export default function App() {
           avgTrailBrakeScore: 80,
           frames: completed,
         };
+        const fuelBurnedLiters = Math.max(
+          0,
+          completed[0].fuelLiters - completed[completed.length - 1].fuelLiters
+        );
+        const startMinWear = Math.min(
+          completed[0].tireWearPct.fl,
+          completed[0].tireWearPct.fr,
+          completed[0].tireWearPct.rl,
+          completed[0].tireWearPct.rr
+        );
+        const endMinWear = Math.min(
+          completed[completed.length - 1].tireWearPct.fl,
+          completed[completed.length - 1].tireWearPct.fr,
+          completed[completed.length - 1].tireWearPct.rl,
+          completed[completed.length - 1].tireWearPct.rr
+        );
+        const maxTireWearLostPct = Math.max(0, startMinWear - endMinWear);
+        const lastDeltaSec = completed[completed.length - 1].deltaSec;
+
         setRecordedLap(finishedLap);
         setSessionLaps((prev) => [...prev.slice(-29), finishedLap]);
-        setDriverProfile((prevProf) =>
-          recordCornerLearningFromLap({
+        setDriverProfile((prevProf) => {
+          const cornerUpdated = recordCornerLearningFromLap({
             profile: prevProf,
             track: trackRef.current,
             lap: finishedLap,
             referenceSamples: referenceSamplesRef.current,
-          })
-        );
+          });
+          return recordDriverObservation(cornerUpdated, null, {
+            deltaSec: lastDeltaSec,
+            trailScore: finishedLap.avgTrailBrakeScore,
+            fuelBurnedLiters,
+            maxTireWearLostPct,
+          });
+        });
         recordedLapFramesRef.current = [nextFrame];
       } else if (nextFrame.speedKmh > 12) {
         const buf = recordedLapFramesRef.current;
@@ -635,6 +664,8 @@ export default function App() {
       setRecentIncidents([]);
       setAutonomyLog([]);
       setActiveFault('none');
+      pitVoiceStateRef.current = createInitialPitStrategyVoiceState();
+      prevPitStrategyRef.current = null;
     }
   }, [car, track, sampleLap]);
 
@@ -1044,7 +1075,10 @@ export default function App() {
         cooldownsRef.current,
         driverProfileRef.current,
         car,
-        { sessionType: detectedSessionTypeRef.current }
+        {
+          sessionType: detectedSessionTypeRef.current,
+          pitStrategy: pitStrategyRef.current,
+        }
       );
       cooldownsRef.current = nextCooldowns;
 
@@ -1055,11 +1089,17 @@ export default function App() {
         if (callout.category === 'track_limits') sessionMistakesRef.current.offTracks += 1;
         pushCallout(callout, false);
         setDriverProfile((prevProf) => recordDriverObservation(prevProf, callout));
-      } else if (prevFrameRef.current && nextFrame.lapNumber > prevFrameRef.current.lapNumber) {
+      } else if (
+        prevFrameRef.current &&
+        nextFrame.lapNumber > prevFrameRef.current.lapNumber &&
+        recordedLapFramesRef.current.length < 20
+      ) {
+        const fallbackFuel = Math.max(0, prevFrameRef.current.fuelLiters - nextFrame.fuelLiters);
         setDriverProfile((prevProf) =>
           recordDriverObservation(prevProf, null, {
             deltaSec: prevFrameRef.current?.deltaSec ?? 0.5,
             trailScore: 78,
+            fuelBurnedLiters: fallbackFuel > 0.3 ? fallbackFuel : undefined,
           })
         );
       }
@@ -1227,7 +1267,10 @@ export default function App() {
             cooldownsRef.current,
             driverProfileRef.current,
             car,
-            { sessionType: detectedSessionTypeRef.current }
+            {
+              sessionType: detectedSessionTypeRef.current,
+              pitStrategy: pitStrategyRef.current,
+            }
           );
           cooldownsRef.current = nextCooldowns;
           if (callout) {
@@ -1397,9 +1440,31 @@ export default function App() {
   detectedSessionTypeRef.current = detectedSessionType;
   const sessionPhaseLabel = formatSessionTypeLabel(detectedSessionType);
 
+  const resolvedRaceLengthLaps = useMemo<number | undefined>(() => {
+    if (
+      typeof frame.sessionTotalLaps === 'number' &&
+      Number.isFinite(frame.sessionTotalLaps) &&
+      frame.sessionTotalLaps >= 1
+    ) {
+      return Math.round(frame.sessionTotalLaps);
+    }
+    if (
+      typeof frame.sessionTimeRemainingSec === 'number' &&
+      Number.isFinite(frame.sessionTimeRemainingSec) &&
+      frame.sessionTimeRemainingSec > 0 &&
+      track.referenceLapTimeSec > 20
+    ) {
+      return Math.max(
+        frame.lapNumber + 1,
+        frame.lapNumber + Math.ceil(frame.sessionTimeRemainingSec / track.referenceLapTimeSec)
+      );
+    }
+    return undefined;
+  }, [frame.sessionTotalLaps, frame.sessionTimeRemainingSec, frame.lapNumber, track.referenceLapTimeSec]);
+
   const pitStrategy = useMemo(
     () =>
-      computePitStrategy(frame, track, car, driverProfile, setup, undefined, {
+      computePitStrategy(frame, track, car, driverProfile, setup, resolvedRaceLengthLaps, {
         autoSelectPitTires: settings.autoSelectPitTires ?? true,
         preselectPitTiresInLmu: settings.preselectPitTiresInLmu ?? false,
         pitRaceMode: settings.pitRaceMode ?? 'auto',
@@ -1415,6 +1480,7 @@ export default function App() {
       car,
       driverProfile,
       setup,
+      resolvedRaceLengthLaps,
       settings.autoSelectPitTires,
       settings.preselectPitTiresInLmu,
       settings.pitRaceMode,
@@ -1425,6 +1491,8 @@ export default function App() {
       recentIncidents,
     ]
   );
+  const pitStrategyRef = useRef<PitStrategyPlan>(pitStrategy);
+  pitStrategyRef.current = pitStrategy;
 
   const handleDismissCrashAlert = useCallback(() => {
     const filtered = recentIncidentsRef.current.filter((inc) => inc.type !== 'crash_impact');
@@ -1487,9 +1555,32 @@ export default function App() {
   useEffect(() => {
     if (!(settings.preselectPitTiresInLmu ?? false)) {
       lastAutoSyncedPitKeyRef.current = '';
+      setPitMfdSyncStatus((prev) =>
+        prev.state === 'idle' &&
+        prev.message === 'Off — Enable Preselect in LMU to push pit tires into LMU (:6397).'
+          ? prev
+          : {
+              state: 'idle',
+              lastAttemptAtMs: prev.lastAttemptAtMs,
+              lastAppliedAtMs: prev.lastAppliedAtMs,
+              appliedHeadline: prev.appliedHeadline,
+              via: 'none',
+              message: 'Off — Enable Preselect in LMU to push pit tires into LMU (:6397).',
+            }
+      );
       return;
     }
-    if (!simStatus?.gameRunning || simStatus.simId !== 'lmu') return;
+    if (!simStatus?.gameRunning || simStatus.simId !== 'lmu') {
+      setPitMfdSyncStatus((prev) =>
+        prev.state === 'idle'
+          ? {
+              ...prev,
+              message: 'Armed — waiting for live LMU session (:6397) to preselect pit tires & repairs.',
+            }
+          : prev
+      );
+      return;
+    }
     const syncKey = `${pitStrategy.tireAction}:${pitStrategy.tireCompound}:${pitStrategy.repairsRecommended}`;
     if (lastAutoSyncedPitKeyRef.current === syncKey) return;
     lastAutoSyncedPitKeyRef.current = syncKey;
@@ -1561,6 +1652,42 @@ export default function App() {
     pitStrategy.crashAlertActive,
     pitStrategy.engineerSummary,
     frame.lapNumber,
+    isLiveRunning,
+    externalStreamActive,
+    pushCallout,
+  ]);
+
+  const prevPitStrategyRef = useRef<PitStrategyPlan | null>(null);
+  const pitVoiceStateRef = useRef<PitStrategyVoiceState>(createInitialPitStrategyVoiceState());
+
+  // Proactive AI voice pit calls: pit window opening, Box this lap, casual no-stop confirmation, and dynamic learned shifts
+  useEffect(() => {
+    if (!isLiveRunning && !externalStreamActive) {
+      prevPitStrategyRef.current = pitStrategy;
+      return;
+    }
+    const evalResult = evaluatePitStrategyVoiceCallout({
+      strategy: pitStrategy,
+      prevStrategy: prevPitStrategyRef.current,
+      frame,
+      settings: settingsRef.current,
+      voiceState: pitVoiceStateRef.current,
+      nowMs: Date.now(),
+      carClass: car.carClass,
+    });
+    pitVoiceStateRef.current = evalResult.nextState;
+    prevPitStrategyRef.current = pitStrategy;
+    if (evalResult.callout) {
+      pushCallout(evalResult.callout, true);
+    }
+  }, [
+    pitStrategy,
+    frame.lapNumber,
+    frame.lapDistPct,
+    frame.inPitOrGarage,
+    frame.isPaused,
+    frame.inFormationLap,
+    car.carClass,
     isLiveRunning,
     externalStreamActive,
     pushCallout,
@@ -2442,8 +2569,13 @@ export default function App() {
       frame.flagState,
       String(Boolean(frame.inFormationLap)),
       String(Boolean(frame.penaltyActive)),
-      racecraftAdvice.posture,
+      String(racecraftAdvice.posture),
       String(recentIncidentsRef.current.length),
+      String(pitStrategy.pitNeededThisRace),
+      String(pitStrategy.recommendedPitLap),
+      pitStrategy.pitTireCallHeadline,
+      String(pitStrategy.crashAlertActive),
+      String(pitStrategy.raceLengthLaps),
     ].join(':');
 
     const nowMs = Date.now();
@@ -2474,6 +2606,8 @@ export default function App() {
         [
           `SessionStatus=${statusNow}`,
           `SessionPhase=${detectedPhase}`,
+          `MatchMode=${pitStrategy.raceModeLabel}`,
+          `RaceLengthLaps=${pitStrategy.raceLengthLaps}`,
           `Track=${track.name}`,
           `Car=${car.name}`,
           `Class=${car.carClass} (${car.carClass === 'LMGT3' ? 'HAS_ABS' : 'NO_ABS'})`,
@@ -2482,13 +2616,20 @@ export default function App() {
           `GameRunning=${simStatus.gameRunning}`,
           `Speed=${Math.round(frame.speedKmh)} km/h`,
           `Gear=${frame.gear}`,
-          `Lap=${frame.lapNumber}`,
+          `Lap=${frame.lapNumber}/${pitStrategy.raceLengthLaps}`,
           `Corner=${cornerLabel}`,
           `Delta=${deltaStr}`,
           `Flag=${frame.flagState}`,
           ...(frame.inFormationLap ? ['FormationLap=true'] : []),
           ...(frame.penaltyActive ? ['PenaltyActive=true'] : []),
-          `Fuel=${frame.fuelLiters.toFixed(1)}L (~${pitStrategy.lapsOfFuelLeft.toFixed(1)} laps left, PitWindowLap=${pitStrategy.recommendedPitLap}, PitTires=${pitStrategy.pitTireCallHeadline} [${pitStrategy.raceModeLabel}]${pitStrategy.crashAlertActive ? ' CRASH_BOX_NOW_REPAIRS_ON' : ''})`,
+          `Fuel=${frame.fuelLiters.toFixed(1)}L (${pitStrategy.fuelBurnPerLapLiters.toFixed(1)}L/lap, ~${pitStrategy.lapsOfFuelLeft.toFixed(1)} laps left)`,
+          `PitNeeded=${pitStrategy.pitNeededThisRace}`,
+          `PitWindow=${pitStrategy.pitNeededThisRace ? `L${pitStrategy.pitWindowStartLap}-L${pitStrategy.pitWindowEndLap} (Box L${pitStrategy.recommendedPitLap})` : 'NoStop_ToFlag'}`,
+          `PitTires=Current:${pitStrategy.currentCompound} -> Next:${pitStrategy.pitTireCallHeadline} (+${pitStrategy.fuelToAddLiters.toFixed(0)}L)${pitStrategy.crashAlertActive ? ' CRASH_BOX_NOW_REPAIRS_ON' : ''}`,
+          `ProjectedFlagWear=${pitStrategy.estimatedWearAtFlagPct}%`,
+          `CliffLap=${pitStrategy.estimatedCliffLap !== null ? `L${pitStrategy.estimatedCliffLap}` : 'None'}`,
+          `DriverHabits=Lockups:${driverProfile.habits.lockupCount} ExitSnaps:${driverProfile.habits.exitSnapCount} Consistency:${driverProfile.habits.brakingConsistencyPct}%`,
+          ...(pitStrategy.learnedAdaptationNote ? [`AdaptationNote=${pitStrategy.learnedAdaptationNote}`] : []),
           `VirtualEnergyPct=${veStr}`,
           `TireTempC=FL:${Math.round(frame.tireTempC.fl)} FR:${Math.round(frame.tireTempC.fr)} RL:${Math.round(frame.tireTempC.rl)} RR:${Math.round(frame.tireTempC.rr)}`,
           `TireWearPct=FL:${Math.round(frame.tireWearPct.fl)} FR:${Math.round(frame.tireWearPct.fr)} RL:${Math.round(frame.tireWearPct.rl)} RR:${Math.round(frame.tireWearPct.rr)}`,
@@ -2516,9 +2657,22 @@ export default function App() {
     settings.autonomyMode,
     activeCorner,
     upcomingCorner,
+    driverProfile.habits.lockupCount,
+    driverProfile.habits.exitSnapCount,
+    driverProfile.habits.brakingConsistencyPct,
     pitStrategy.lapsOfFuelLeft,
+    pitStrategy.fuelBurnPerLapLiters,
+    pitStrategy.fuelToAddLiters,
+    pitStrategy.pitNeededThisRace,
+    pitStrategy.pitWindowStartLap,
+    pitStrategy.pitWindowEndLap,
     pitStrategy.recommendedPitLap,
     pitStrategy.pitTireCallHeadline,
+    pitStrategy.currentCompound,
+    pitStrategy.estimatedWearAtFlagPct,
+    pitStrategy.estimatedCliffLap,
+    pitStrategy.learnedAdaptationNote,
+    pitStrategy.raceLengthLaps,
     pitStrategy.raceModeLabel,
     pitStrategy.crashAlertActive,
     setup.brakeBiasPct,

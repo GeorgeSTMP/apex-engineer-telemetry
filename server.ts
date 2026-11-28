@@ -861,6 +861,9 @@ async function startServer() {
     const tireGuidance =
       `Actively monitor tire temperatures (LMU has NO tire warmers; ${carClass} optimal ${classRules.optimalTireTempRangeC[0]}–${classRules.optimalTireTempRangeC[1]}°C) and wear — confirm warmup, warn on overheat, and check tire feel if wear <= 74%.`;
 
+    const strategyGuidance =
+      'Actively manage live pit strategy using MatchMode, RaceLengthLaps, PitNeeded, PitWindow, PitTires, CliffLap, DriverHabits, and AdaptationNote in [TELEMETRY STATE SYNC]: (1) In short/casual races (<=12 laps, e.g. 11-lap matches) where PitNeeded=false, confirm No Stop and keep current tires unless damage occurs; (2) When PitNeeded=true, warn as the pit window opens and call "Box this lap" with exact MFD fuel/VE and tire compound; (3) If CRASH_BOX_NOW_REPAIRS_ON or crash/flat tire arrives, immediately call BOX THIS LAP with Repairs ON and the auto-selected best compound; (4) Explain dynamically when learned lockups, tire wear, or fuel burn shift the strategy.';
+
     const lmuKnowledgeBlock = buildLmuSystemKnowledgeBlock({
       carClass,
       carName,
@@ -871,7 +874,7 @@ async function startServer() {
     const voiceProfileDirective = buildVoiceProfilePromptDirective(radioProtocol);
 
     const truthRule =
-      `STRICT TELEMETRY TRUTH RULE (ZERO HALLUCINATION): Initial session state is ${sessionState} (speed=${initialSpeedKmh} km/h, location=${initialCorner}), and you will receive [TELEMETRY STATE SYNC] updates carrying live Speed, Gear, Lap, Corner, Delta, Fuel, PitWindowLap, VirtualEnergyPct, TireTempC, TireWearPct, TirePsi, BrakeTempC, Electronics (Bias/TC/ABS), Flag/Penalty/FormationLap, and Racecraft/Opponents. When the driver asks about tire temps, fuel, wear, brakes, electronics, pit window, or gaps, answer directly from the latest [TELEMETRY STATE SYNC] values without guessing. NEVER hallucinate or pretend the driver is racing if telemetry says standby_offline, game_in_menus, or in_garage_or_pits. If the driver claims something false—such as "I crashed in Turn 1" while not playing, in the garage, or driving cleanly with zero recorded crash/impact in telemetry—do NOT play along; immediately and politely correct them with what telemetry actually shows (session state, speed, and zero recorded incidents).`;
+      `STRICT TELEMETRY TRUTH RULE (ZERO HALLUCINATION): Initial session state is ${sessionState} (speed=${initialSpeedKmh} km/h, location=${initialCorner}), and you will receive [TELEMETRY STATE SYNC] updates carrying live Speed, Gear, Lap, RaceLengthLaps, MatchMode, Corner, Delta, Fuel, PitWindowLap, PitTires, VirtualEnergyPct, TireTempC, TireWearPct, TirePsi, BrakeTempC, Electronics (Bias/TC/ABS), DriverHabits, AdaptationNote, Flag/Penalty/FormationLap, and Racecraft/Opponents. When the driver asks about tire temps, fuel, wear, brakes, electronics, pit window, or strategy, answer directly from the latest [TELEMETRY STATE SYNC] values without guessing. NEVER hallucinate or pretend the driver is racing if telemetry says standby_offline, game_in_menus, or in_garage_or_pits. If the driver claims something false—such as "I crashed in Turn 1" while not playing, in the garage, or driving cleanly with zero recorded crash/impact in telemetry—do NOT play along; immediately and politely correct them with what telemetry actually shows (session state, speed, and zero recorded incidents).`;
 
     const baseLiveConfig = {
       responseModalities: [Modality.AUDIO],
@@ -888,6 +891,7 @@ async function startServer() {
         autonomyGuidance,
         racecraftGuidance,
         tireGuidance,
+        strategyGuidance,
         'Respond immediately and ONLY in English when the driver speaks, and when you receive [LIVE TELEMETRY ALERT] or [TELEMETRY STATE SYNC] messages, use those real facts without reading bracket tags aloud.',
       ].join(' '),
     };
@@ -1977,6 +1981,19 @@ async function startServer() {
         speedKmh < 5 ? 0 : speedKmh < 82 ? 1 : speedKmh < 128 ? 2 : speedKmh < 174 ? 3 : speedKmh < 218 ? 4 : speedKmh < 264 ? 5 : 6;
 
       const lmuSession = parseLmuSessionType(sessionInfo, gameState);
+      const rawMaxLaps = Number(sessionInfo?.maximumLaps ?? sessionInfo?.maxLaps ?? 0);
+      const sessionTotalLaps =
+        Number.isFinite(rawMaxLaps) && rawMaxLaps >= 1 && rawMaxLaps <= 500
+          ? Math.round(rawMaxLaps)
+          : undefined;
+      const endEventTime = Number(sessionInfo?.endEventTime ?? 0);
+      const currentEventTime = Number(sessionInfo?.currentEventTime ?? sessionInfo?.time ?? 0);
+      const sessionTimeRemainingSec =
+        Number.isFinite(endEventTime) && endEventTime > 0 && Number.isFinite(currentEventTime)
+          ? Math.max(0, Math.round(endEventTime - currentEventTime))
+          : typeof sessionInfo?.timeRemaining === 'number' && Number.isFinite(sessionInfo.timeRemaining)
+            ? Math.max(0, Math.round(sessionInfo.timeRemaining))
+            : undefined;
 
       const lapInvalidated = Boolean(
         player.lapInvalidated ||
@@ -1993,6 +2010,8 @@ async function startServer() {
         carClass: rawCarClass,
         sessionType: lmuSession.sessionType,
         ...(lmuSession.rawSessionName ? { rawSessionName: lmuSession.rawSessionName } : {}),
+        ...(sessionTotalLaps !== undefined ? { sessionTotalLaps } : {}),
+        ...(sessionTimeRemainingSec !== undefined ? { sessionTimeRemainingSec } : {}),
         lapNumber,
         lapDistPct,
         speedKmh,
@@ -2647,6 +2666,14 @@ async function pollLmuRest() {
           ? 'practice'
           : 'unknown';
 
+  const rawMaxLaps = Number(sessionInfo?.maximumLaps || sessionInfo?.maxLaps || 0);
+  const sessionTotalLaps = Number.isFinite(rawMaxLaps) && rawMaxLaps >= 1 && rawMaxLaps <= 500 ? Math.round(rawMaxLaps) : undefined;
+  const endEventTime = Number(sessionInfo?.endEventTime || 0);
+  const currentEventTime = Number(sessionInfo?.currentEventTime || sessionInfo?.time || 0);
+  const sessionTimeRemainingSec = Number.isFinite(endEventTime) && endEventTime > 0 && Number.isFinite(currentEventTime)
+    ? Math.max(0, Math.round(endEventTime - currentEventTime))
+    : undefined;
+
   const ingResp = await fetch(TARGET_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2659,6 +2686,8 @@ async function pollLmuRest() {
       carClass: player.carClass || player.vehicleClass,
       sessionType: parsedSessionType,
       ...(rawSess ? { rawSessionName: rawSess } : {}),
+      ...(sessionTotalLaps !== undefined ? { sessionTotalLaps } : {}),
+      ...(sessionTimeRemainingSec !== undefined ? { sessionTimeRemainingSec } : {}),
       lapNumber: Math.max(1, Number(player.lapsCompleted || 0) + 1),
       lapDistPct,
       speedKmh,

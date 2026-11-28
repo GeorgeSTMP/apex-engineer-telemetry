@@ -6,7 +6,9 @@ import {
   computeLearnedGreenLineCalibration,
   computePitStrategy,
   createDefaultDriverProfile,
+  createInitialPitStrategyVoiceState,
   evaluateAutonomyAction,
+  evaluatePitStrategyVoiceCallout,
   makeCornerMemoryKey,
   recordCornerLearningFromLap,
   recordDriverObservation,
@@ -572,6 +574,339 @@ test('computePitStrategy factors Hypercar Virtual Energy depletion and Preselect
   assert.match(veLimitedPlan.engineerSummary, /VE 20% limits stint/i);
   assert.match(veLimitedPlan.controlModeNote, /LMU Pit MFD Preselect ON/i);
 });
+
+test('computePitStrategy generates F1 Manager 24 stint timeline, Plan A/B/C options, cliff lap, and rejoin traffic forecast', () => {
+  const track = TRACKS[0]; // Le Mans
+  const car = CARS[0]; // Hypercar
+  const pro = createDefaultDriverProfile(false);
+
+  const plan = computePitStrategy(
+    makeDummyFrame({
+      lapNumber: 4,
+      fuelLiters: 18,
+      virtualEnergyPct: 32,
+      tireWearPct: { fl: 78, fr: 76, rl: 84, rr: 83 },
+      sessionType: 'race',
+      opponents: [
+        {
+          id: 'opp-1',
+          carNumber: '51',
+          driverName: 'A. Pier Guidi',
+          carClass: 'Hypercar',
+          carName: 'Ferrari 499P',
+          lapDistPct: 0.25,
+          speedKmh: 280,
+          gapSeconds: -39.5,
+          distanceMeters: -1950,
+          closingSpeedKmh: 2,
+          lateralSide: 'center',
+          isAlongside: false,
+          safetyRating: 'clean',
+        },
+      ],
+    }),
+    track,
+    car,
+    pro,
+    car.defaultSetup,
+    14,
+    {
+      autoSelectPitTires: true,
+      pitRaceMode: 'standard_online',
+      sessionType: 'race',
+    }
+  );
+
+  assert.equal(plan.pitNeededThisRace, true);
+  assert.equal(plan.currentCompound, 'Medium');
+  assert.equal(plan.activeStints.length, 2);
+  assert.equal(plan.activeStints[0].isCurrent, true);
+  assert.equal(plan.activeStints[1].isPitStopBefore, true);
+  assert.equal(plan.activeStints[1].pitLap, plan.recommendedPitLap);
+  assert.equal(plan.strategyOptions.length, 4);
+  assert.deepEqual(
+    plan.strategyOptions.map((o) => o.code),
+    ['Plan Auto', 'Plan A', 'Plan B', 'Plan C']
+  );
+  const uniqueOverrides = new Set(plan.strategyOptions.map((o) => o.pitTireOverride));
+  assert.equal(uniqueOverrides.size, 4);
+  assert.equal(plan.strategyOptions[0].id, 'plan_auto');
+  assert.equal(plan.strategyOptions[0].autoSelectPitTires, true);
+  assert.ok(plan.estimatedCliffLap !== null && plan.estimatedCliffLap >= 4);
+  assert.match(plan.rejoinTrafficNote, /#51 \(-39\.5s\)/i);
+  assert.ok(plan.pitWindowStartLap <= plan.recommendedPitLap);
+  assert.ok(plan.pitWindowEndLap >= plan.recommendedPitLap);
+
+  // Selecting Plan B updates active call & stints while keeping Plan Auto as live dynamic baseline
+  const planBOpt = plan.strategyOptions.find((o) => o.id === 'plan_b')!;
+  const planBActive = computePitStrategy(
+    makeDummyFrame({
+      lapNumber: 4,
+      fuelLiters: 18,
+      virtualEnergyPct: 32,
+      tireWearPct: { fl: 78, fr: 76, rl: 84, rr: 83 },
+      sessionType: 'race',
+    }),
+    track,
+    car,
+    pro,
+    car.defaultSetup,
+    14,
+    {
+      autoSelectPitTires: planBOpt.autoSelectPitTires,
+      pitTireOverride: planBOpt.pitTireOverride,
+      pitRaceMode: 'standard_online',
+      sessionType: 'race',
+    }
+  );
+  assert.equal(planBActive.tireAutoSelected, false);
+  assert.equal(planBActive.pitTireCallHeadline, planBOpt.nextTireHeadline);
+  assert.equal(planBActive.recommendedPitLap, planBOpt.pitLap);
+  assert.equal(planBActive.strategyOptions[0].nextTireHeadline, plan.strategyOptions[0].nextTireHeadline);
+
+  // Selecting Plan A sets manual 4x Medium baseline without losing Plan Auto
+  const planAOpt = plan.strategyOptions.find((o) => o.id === 'plan_a')!;
+  assert.equal(planAOpt.autoSelectPitTires, false);
+  assert.equal(planAOpt.pitTireOverride, 'all_medium');
+  const planAActive = computePitStrategy(
+    makeDummyFrame({
+      lapNumber: 4,
+      fuelLiters: 18,
+      virtualEnergyPct: 32,
+      tireWearPct: { fl: 78, fr: 76, rl: 84, rr: 83 },
+      sessionType: 'race',
+    }),
+    track,
+    car,
+    pro,
+    car.defaultSetup,
+    14,
+    {
+      autoSelectPitTires: planAOpt.autoSelectPitTires,
+      pitTireOverride: planAOpt.pitTireOverride,
+      pitRaceMode: 'standard_online',
+      sessionType: 'race',
+    }
+  );
+  assert.equal(planAActive.tireAutoSelected, false);
+  assert.equal(planAActive.pitTireCallHeadline, '4x Medium');
+});
+
+test('11-lap casual match stays No Stop cleanly unless crash/damage picks best replacement tires', () => {
+  const track = TRACKS.find((t) => t.id === 'spa') ?? TRACKS[1]; // ~7km -> 3.2L/lap Hypercar fuel
+  const car = CARS[0];
+  const pro = createDefaultDriverProfile(false);
+
+  // Clean 11-lap casual race with 40L fuel + 95% tires: no tire change or pit stop needed
+  const lap1Frame = makeDummyFrame({
+    lapNumber: 1,
+    lapDistPct: 0.12,
+    fuelLiters: 40,
+    tireWearPct: { fl: 99, fr: 99, rl: 99, rr: 99 },
+    sessionType: 'race',
+    sessionTotalLaps: 11,
+  });
+  const casualClean = computePitStrategy(
+    lap1Frame,
+    track,
+    car,
+    pro,
+    car.defaultSetup,
+    11,
+    { autoSelectPitTires: true, pitRaceMode: 'auto', sessionType: 'race' }
+  );
+  assert.equal(casualClean.resolvedRaceMode, 'short_online');
+  assert.equal(casualClean.raceLengthLaps, 11);
+  assert.equal(casualClean.pitNeededThisRace, false);
+  assert.equal(casualClean.tireAction, 'fuel_only');
+  assert.match(casualClean.pitTireCallHeadline, /Keep Tires/i);
+  assert.equal(casualClean.strategyOptions[0].id, 'plan_auto');
+  assert.equal(casualClean.strategyOptions[0].name, 'No-Stop · 11L Match');
+  assert.equal(casualClean.strategyOptions[0].pitRequired, false);
+  assert.equal(new Set(casualClean.strategyOptions.map((o) => o.pitTireOverride)).size, 4);
+
+  // Voice evaluator confirms No Stop once on Lap 1, then stays quiet on later clean laps
+  let voiceState = createInitialPitStrategyVoiceState();
+  const lap1Voice = evaluatePitStrategyVoiceCallout({
+    strategy: casualClean,
+    prevStrategy: null,
+    frame: lap1Frame,
+    settings: { voiceEnabled: true, pitWindowCountdownEnabled: true },
+    voiceState,
+    nowMs: 20000,
+    carClass: car.carClass,
+  });
+  voiceState = lap1Voice.nextState;
+  assert.equal(lap1Voice.eventType, 'no_stop_reassure');
+  assert.match(lap1Voice.callout?.message ?? '', /11-lap short race/i);
+
+  const lap6Voice = evaluatePitStrategyVoiceCallout({
+    strategy: computePitStrategy(
+      makeDummyFrame({
+        lapNumber: 6,
+        lapDistPct: 0.5,
+        fuelLiters: 24,
+        tireWearPct: { fl: 88, fr: 88, rl: 90, rr: 90 },
+        sessionType: 'race',
+        sessionTotalLaps: 11,
+      }),
+      track,
+      car,
+      pro,
+      car.defaultSetup,
+      11,
+      { autoSelectPitTires: true, pitRaceMode: 'auto', sessionType: 'race' }
+    ),
+    prevStrategy: casualClean,
+    frame: makeDummyFrame({ lapNumber: 6, lapDistPct: 0.5, sessionType: 'race' }),
+    settings: { voiceEnabled: true, pitWindowCountdownEnabled: true },
+    voiceState,
+    nowMs: 180000,
+    carClass: car.carClass,
+  });
+  assert.equal(lap6Voice.callout, null);
+
+  // Crash in final 4 laps of 11-lap casual match -> BOX NOW, Repairs ON, optimal 4x Soft recovery compound
+  const crashSprint = computePitStrategy(
+    makeDummyFrame({
+      lapNumber: 8,
+      lapDistPct: 0.4,
+      fuelLiters: 18,
+      tireWearPct: { fl: 84, fr: 84, rl: 88, rr: 88 },
+      flatTire: true,
+      sessionType: 'race',
+      sessionTotalLaps: 11,
+    }),
+    track,
+    car,
+    pro,
+    car.defaultSetup,
+    11,
+    { autoSelectPitTires: true, pitRaceMode: 'auto', sessionType: 'race', trackCondition: 'optimal' }
+  );
+  assert.equal(crashSprint.crashAlertActive, true);
+  assert.equal(crashSprint.repairsRecommended, true);
+  assert.equal(crashSprint.pitCallUrgency, 'box_now_damage');
+  assert.equal(crashSprint.recommendedPitLap, 8);
+  assert.equal(crashSprint.tireAction, 'change_all');
+  assert.equal(crashSprint.tireCompound, 'Soft');
+  assert.equal(crashSprint.strategyOptions[0].id, 'plan_auto');
+  assert.equal(crashSprint.strategyOptions[0].name, 'Box Now · Repair');
+  assert.equal(crashSprint.strategyOptions[0].tag, 'Emergency');
+  assert.equal(crashSprint.strategyOptions[0].nextCompound, 'Soft');
+  assert.equal(crashSprint.strategyOptions[0].pitLap, 8);
+});
+
+test('driver learning adapts fuel/wear strategy dynamically and emits proactive pit window, box lap, and shift voice calls', () => {
+  const track = TRACKS.find((t) => t.id === 'spa') ?? TRACKS[1];
+  const car = CARS[0];
+  let profile = createDefaultDriverProfile(false);
+
+  const baselinePlan = computePitStrategy(
+    makeDummyFrame({
+      lapNumber: 3,
+      lapDistPct: 0.4,
+      fuelLiters: 26,
+      tireWearPct: { fl: 88, fr: 88, rl: 90, rr: 90 },
+      sessionType: 'race',
+    }),
+    track,
+    car,
+    profile,
+    car.defaultSetup,
+    16,
+    { autoSelectPitTires: true, pitRaceMode: 'standard_online', sessionType: 'race' }
+  );
+
+  // Simulate aggressive driving learned across laps: high fuel burn + heavy front lockups & high tire wear
+  const lockupCallout: CoachCallout = {
+    id: 'lock-1',
+    timestampMs: 5000,
+    lapNumber: 3,
+    cornerName: 'Turn 1',
+    severity: 'urgent',
+    category: 'lockup',
+    message: 'Lockup',
+    spoken: true,
+    source: 'realtime-engine',
+  };
+  for (let i = 0; i < 3; i++) {
+    profile = recordDriverObservation(profile, lockupCallout, {
+      deltaSec: 0.7,
+      trailScore: 71,
+      fuelBurnedLiters: 4.9,
+      maxTireWearLostPct: 6.4,
+    });
+  }
+
+  assert.ok((profile.habits.observedFuelPerLapLiters ?? 0) > 4.2);
+  assert.ok((profile.habits.observedWearPerLapPct ?? 0) > 5.5);
+  assert.equal(profile.habits.lockupCount, 3);
+
+  const adaptedPlan = computePitStrategy(
+    makeDummyFrame({
+      lapNumber: 4,
+      lapDistPct: 0.4,
+      fuelLiters: 21,
+      tireWearPct: { fl: 79, fr: 80, rl: 88, rr: 89 },
+      sessionType: 'race',
+    }),
+    track,
+    car,
+    profile,
+    car.defaultSetup,
+    16,
+    { autoSelectPitTires: true, pitRaceMode: 'standard_online', sessionType: 'race' }
+  );
+
+  assert.ok(adaptedPlan.fuelBurnPerLapLiters > baselinePlan.fuelBurnPerLapLiters);
+  assert.ok(adaptedPlan.recommendedPitLap < baselinePlan.recommendedPitLap);
+  assert.equal(adaptedPlan.tireAction, 'change_all');
+  assert.equal(adaptedPlan.strategyOptions[0].id, 'plan_auto');
+  assert.equal(adaptedPlan.strategyOptions[0].name, 'Adaptive · Re-Timed');
+  assert.ok(adaptedPlan.learnedAdaptationNote && /Adapted from your driving/i.test(adaptedPlan.learnedAdaptationNote));
+
+  // Verify proactive voice sequence: learned shift -> pit window open -> box this lap
+  let voiceState = createInitialPitStrategyVoiceState();
+  const shiftEval = evaluatePitStrategyVoiceCallout({
+    strategy: adaptedPlan,
+    prevStrategy: baselinePlan,
+    frame: makeDummyFrame({ lapNumber: 4, lapDistPct: 0.25, sessionType: 'race' }),
+    settings: { voiceEnabled: true, pitWindowCountdownEnabled: true },
+    voiceState,
+    nowMs: 40000,
+    carClass: car.carClass,
+  });
+  voiceState = shiftEval.nextState;
+  assert.equal(shiftEval.eventType, 'learned_strategy_shift');
+  assert.match(shiftEval.callout?.message ?? '', /Strategy update/i);
+
+  const windowEval = evaluatePitStrategyVoiceCallout({
+    strategy: adaptedPlan,
+    prevStrategy: adaptedPlan,
+    frame: makeDummyFrame({ lapNumber: adaptedPlan.pitWindowStartLap, lapDistPct: 0.2, sessionType: 'race' }),
+    settings: { voiceEnabled: true, pitWindowCountdownEnabled: true },
+    voiceState,
+    nowMs: 70000,
+    carClass: car.carClass,
+  });
+  voiceState = windowEval.nextState;
+  assert.equal(windowEval.eventType, 'pit_window_open');
+  assert.match(windowEval.callout?.message ?? '', /Pit window open/i);
+
+  const boxEval = evaluatePitStrategyVoiceCallout({
+    strategy: adaptedPlan,
+    prevStrategy: adaptedPlan,
+    frame: makeDummyFrame({ lapNumber: adaptedPlan.recommendedPitLap, lapDistPct: 0.55, sessionType: 'race' }),
+    settings: { voiceEnabled: true, pitWindowCountdownEnabled: true },
+    voiceState,
+    nowMs: 110000,
+    carClass: car.carClass,
+  });
+  assert.equal(boxEval.eventType, 'box_this_lap');
+  assert.match(boxEval.callout?.message ?? '', /Box this lap/i);
+});
+
 
 
 

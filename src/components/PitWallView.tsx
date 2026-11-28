@@ -115,6 +115,50 @@ function getTireTempTone(
   return { text: 'text-emerald-400', label: 'Optimal' };
 }
 
+function getCompoundVisual(compound: 'Soft' | 'Medium' | 'Hard' | 'Wet'): {
+  code: 'S' | 'M' | 'H' | 'W';
+  stripe: string;
+  tint: string;
+  badge: string;
+  text: string;
+} {
+  switch (compound) {
+    case 'Soft':
+      return {
+        code: 'S',
+        stripe: 'bg-rose-500',
+        tint: 'bg-rose-500/12 border-rose-500/35',
+        badge: 'bg-rose-500/20 text-rose-300 border-rose-500/50',
+        text: 'text-rose-300',
+      };
+    case 'Hard':
+      return {
+        code: 'H',
+        stripe: 'bg-slate-200',
+        tint: 'bg-slate-300/10 border-slate-400/35',
+        badge: 'bg-slate-200/15 text-slate-200 border-slate-400/50',
+        text: 'text-slate-200',
+      };
+    case 'Wet':
+      return {
+        code: 'W',
+        stripe: 'bg-cyan-400',
+        tint: 'bg-cyan-500/12 border-cyan-500/35',
+        badge: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50',
+        text: 'text-cyan-300',
+      };
+    case 'Medium':
+    default:
+      return {
+        code: 'M',
+        stripe: 'bg-amber-400',
+        tint: 'bg-amber-500/12 border-amber-500/35',
+        badge: 'bg-amber-500/20 text-amber-300 border-amber-500/50',
+        text: 'text-amber-300',
+      };
+  }
+}
+
 export function PitWallView({
   track,
   car,
@@ -797,8 +841,21 @@ export function PitWallView({
               </div>
               <div className="pl-2 text-right">
                 <div className="text-[10px] uppercase tracking-wider text-slate-500">Box</div>
-                <div className="text-sm font-semibold text-cyan-300">
-                  L{pitStrategy.recommendedPitLap}
+                <div
+                  data-testid="live-box-kpi"
+                  className={`text-sm font-semibold ${
+                    pitStrategy.crashAlertActive
+                      ? 'text-rose-400'
+                      : pitStrategy.pitNeededThisRace
+                        ? 'text-cyan-300'
+                        : 'text-emerald-400'
+                  }`}
+                >
+                  {pitStrategy.crashAlertActive
+                    ? 'NOW'
+                    : pitStrategy.pitNeededThisRace
+                      ? `L${pitStrategy.recommendedPitLap}`
+                      : 'NO STOP'}
                 </div>
               </div>
             </div>
@@ -1039,247 +1096,566 @@ export function PitWallView({
             {/* Tab Content */}
             <div className="min-h-0 flex-1 overflow-y-auto pt-2.5 pr-0.5">
               {opsTab === 'strategy' ? (
-                <div className="space-y-2.5">
-                  {/* Decision Hero Row + Progressive Disclosure Toggle */}
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-2 min-w-0">
-                      <span
-                        data-testid="pit-box-lap-badge"
-                        className={`font-mono text-sm font-semibold tabular-nums whitespace-nowrap ${
-                          pitStrategy.crashAlertActive ? 'text-rose-400' : 'text-cyan-400'
-                        }`}
-                      >
-                        {pitStrategy.crashAlertActive
-                          ? 'BOX NOW · Repairs'
-                          : `Box Lap ${pitStrategy.recommendedPitLap}`}
-                      </span>
-                      <span className="text-slate-600" aria-hidden="true">·</span>
-                      <span
-                        data-testid="pit-detected-session"
-                        className={`font-mono text-[11px] font-medium whitespace-nowrap ${
-                          pitStrategy.detectedSessionType === 'qualifying'
-                            ? 'text-amber-300'
-                            : pitStrategy.detectedSessionType === 'race'
-                              ? 'text-emerald-400'
-                              : isLiveRunning && pitStrategy.detectedSessionType === 'unknown'
-                                ? 'text-cyan-300'
-                                : 'text-slate-300'
-                        }`}
-                      >
-                        {pitStrategy.detectedSessionType === 'unknown' && isLiveRunning
-                          ? 'Practice Demo Stint'
-                          : pitStrategy.sessionPhaseDetectedLabel}
-                      </span>
-                    </div>
+                (() => {
+                  const currentVisual = getCompoundVisual(pitStrategy.currentCompound);
+                  const nextCompound = pitStrategy.tireAction === 'fuel_only'
+                    ? pitStrategy.currentCompound
+                    : pitStrategy.tireCompound;
+                  const nextVisual = getCompoundVisual(nextCompound);
+                  const activeOptionId =
+                    (settings.autoSelectPitTires ?? true) || (settings.pitTireOverride ?? 'auto') === 'auto'
+                      ? 'plan_auto'
+                      : pitStrategy.strategyOptions.find(
+                          (o) => !o.autoSelectPitTires && o.pitTireOverride === settings.pitTireOverride
+                        )?.id ?? 'plan_a';
+                  const planAutoOption = pitStrategy.strategyOptions.find((o) => o.id === 'plan_auto');
+                  const fixedPlanOptions = pitStrategy.strategyOptions.filter((o) => o.id !== 'plan_auto');
+                  const preselectOn = settings.preselectPitTiresInLmu ?? false;
+                  const effectiveMfdMessage =
+                    preselectOn && (!pitMfdSyncStatus || pitMfdSyncStatus.state === 'idle')
+                      ? simStatus?.gameRunning && simStatus.simId === 'lmu'
+                        ? 'Armed — syncing Pit MFD (:6397) with active strategy...'
+                        : 'Armed — waiting for live LMU session (:6397) to preselect pit tires & repairs.'
+                      : pitMfdSyncStatus?.message ?? '';
 
-                    <button
-                      type="button"
-                      onClick={() => setPitConfigOpen((v) => !v)}
-                      aria-expanded={pitConfigOpen}
-                      data-testid="pit-configure-toggle"
-                      className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 font-mono text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                        pitConfigOpen
-                          ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200'
-                          : 'border-[#273145] bg-[#090B10] text-slate-300 hover:border-cyan-500/40'
-                      }`}
-                    >
-                      <span>Configure</span>
-                      {pitConfigOpen ? (
-                        <ChevronUp className="h-3 w-3" aria-hidden="true" />
-                      ) : (
-                        <ChevronDown className="h-3 w-3" aria-hidden="true" />
-                      )}
-                    </button>
-                  </div>
-
-                  {/* Crash / Damage Pit Alert */}
-                  {pitStrategy.crashAlertActive && (
-                    <div
-                      role="alert"
-                      data-testid="pit-crash-alert-box"
-                      className="flex items-start justify-between gap-2 rounded border border-rose-500/50 bg-rose-500/10 px-2.5 py-2 text-xs text-rose-200"
-                    >
-                      <div className="min-w-0">
-                        <div className="font-mono text-[11px] font-semibold uppercase text-rose-300">
-                          Crash / Damage Pit Call · Repairs ON
-                        </div>
-                        <p className="mt-0.5 text-[11px] text-rose-200/90">
-                          {pitStrategy.crashReason}
-                        </p>
-                      </div>
-                      {onDismissCrashAlert && (
-                        <button
-                          type="button"
-                          data-testid="dismiss-crash-pit-alert"
-                          onClick={onDismissCrashAlert}
-                          className="rounded border border-rose-400/50 bg-[#090B10] px-2 py-0.5 font-mono text-[10px] font-medium text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap shrink-0"
-                        >
-                          Dismiss
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Core Strategy Telemetry Trio */}
-                  <div className="grid grid-cols-3 divide-x divide-[#1B2230] rounded border border-[#1B2230] bg-[#090B10] px-2.5 py-2 font-mono text-xs tabular-nums">
-                    <div className="pr-2">
-                      <div className="text-[10px] uppercase text-slate-500">
-                        {pitStrategy.stintLimitingFactor === 'virtual_energy' ? 'Fuel / VE' : 'Fuel Left'}
-                      </div>
-                      <div className="mt-0.5 text-slate-200">
-                        {pitStrategy.lapsOfFuelLeft.toFixed(1)} laps
-                        {pitStrategy.lapsOfVeLeft !== undefined && (
+                  return (
+                    <div className="space-y-1.5">
+                      {/* Decision Hero Row + Progressive Disclosure Toggle */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
                           <span
-                            className={`block text-[10px] ${
-                              pitStrategy.stintLimitingFactor === 'virtual_energy'
-                                ? 'text-cyan-300 font-semibold'
-                                : 'text-slate-500'
+                            data-testid="pit-box-lap-badge"
+                            className={`font-mono text-[13px] font-semibold tabular-nums whitespace-nowrap shrink-0 ${
+                              pitStrategy.crashAlertActive
+                                ? 'text-rose-400'
+                                : pitStrategy.pitNeededThisRace
+                                  ? 'text-cyan-400'
+                                  : 'text-emerald-400'
                             }`}
                           >
-                            VE: {pitStrategy.lapsOfVeLeft.toFixed(1)}L
+                            {pitStrategy.crashAlertActive
+                              ? 'BOX NOW · Repairs'
+                              : pitStrategy.pitNeededThisRace
+                                ? `Box L${pitStrategy.pitWindowStartLap}–${pitStrategy.pitWindowEndLap} (L${pitStrategy.recommendedPitLap})`
+                                : `No Stop · Flag L${pitStrategy.raceLengthLaps}`}
                           </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="px-2">
-                      <div className="text-[10px] uppercase text-slate-500">Add Fuel</div>
-                      <div className="mt-0.5 text-slate-200">
-                        {pitStrategy.fuelToAddLiters.toFixed(0)} L
-                        {car.carClass === 'Hypercar' && (
-                          <span className="block text-[10px] text-slate-500">+ 100% VE</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="pl-2">
-                      <div className="text-[10px] uppercase text-slate-500">Pit MFD Tires</div>
-                      <div
-                        className="mt-0.5 text-cyan-300 font-semibold truncate"
-                        data-testid="pit-tire-call-headline"
-                      >
-                        {pitStrategy.pitTireCallHeadline}
-                      </div>
-                    </div>
-                  </div>
+                          <span className="text-slate-600 shrink-0" aria-hidden="true">·</span>
+                          <span
+                            data-testid="pit-detected-session"
+                            title={pitStrategy.sessionPhaseDetectedLabel}
+                            className={`font-mono text-[11px] font-medium truncate ${
+                              pitStrategy.detectedSessionType === 'qualifying'
+                                ? 'text-amber-300'
+                                : pitStrategy.detectedSessionType === 'race'
+                                  ? 'text-emerald-400'
+                                  : isLiveRunning && pitStrategy.detectedSessionType === 'unknown'
+                                    ? 'text-cyan-300'
+                                    : 'text-slate-400'
+                            }`}
+                          >
+                            {pitStrategy.detectedSessionType === 'unknown' && isLiveRunning
+                              ? 'Practice Demo Stint'
+                              : pitStrategy.sessionPhaseDetectedLabel}
+                          </span>
+                        </div>
 
-                  {/* Actionable Strategy Call */}
-                  <p className="text-xs leading-relaxed text-slate-200" data-testid="pit-tire-reason">
-                    {pitStrategy.tireSelectionReason}
-                  </p>
-                  <p className="text-[11px] text-slate-400">{pitStrategy.engineerSummary}</p>
-
-                  {/* LMU Pit MFD Quick Actions */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-[#1B2230] bg-[#090B10] px-2.5 py-2">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <button
-                        type="button"
-                        data-testid="lmu-preselect-tires-toggle"
-                        title="Pre-select recommended tires & repairs inside Le Mans Ultimate's Pit MFD via local :6397 API."
-                        onClick={() =>
-                          onUpdateSettings({
-                            preselectPitTiresInLmu: !(settings.preselectPitTiresInLmu ?? false),
-                          })
-                        }
-                        className={`rounded border px-2 py-1 font-mono text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                          (settings.preselectPitTiresInLmu ?? false)
-                            ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
-                            : 'border-[#273145] bg-[#10141D] text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200'
-                        }`}
-                      >
-                        Preselect in LMU: {(settings.preselectPitTiresInLmu ?? false) ? 'ON' : 'OFF'}
-                      </button>
-                      {onSyncPitMenuToLmu && (
                         <button
                           type="button"
-                          data-testid="sync-lmu-mfd-btn"
-                          onClick={onSyncPitMenuToLmu}
-                          className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 font-mono text-[10px] font-medium text-cyan-200 hover:bg-cyan-500/20 cursor-pointer whitespace-nowrap"
+                          onClick={() => setPitConfigOpen((v) => !v)}
+                          aria-expanded={pitConfigOpen}
+                          data-testid="pit-configure-toggle"
+                          className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 font-mono text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                            pitConfigOpen
+                              ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200'
+                              : 'border-[#273145] bg-[#090B10] text-slate-300 hover:border-cyan-500/40'
+                          }`}
                         >
-                          Sync MFD
+                          <span>Configure</span>
+                          {pitConfigOpen ? (
+                            <ChevronUp className="h-3 w-3" aria-hidden="true" />
+                          ) : (
+                            <ChevronDown className="h-3 w-3" aria-hidden="true" />
+                          )}
                         </button>
+                      </div>
+
+                      {/* Crash / Damage Pit Alert */}
+                      {pitStrategy.crashAlertActive && (
+                        <div
+                          role="alert"
+                          data-testid="pit-crash-alert-box"
+                          className="flex items-start justify-between gap-2 rounded border border-rose-500/50 bg-rose-500/10 px-2.5 py-1.5 text-xs text-rose-200"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-mono text-[11px] font-semibold uppercase text-rose-300">
+                              Crash / Damage Pit Call · Repairs ON
+                            </div>
+                            <p className="mt-0.5 text-[11px] text-rose-200/90">
+                              {pitStrategy.crashReason}
+                            </p>
+                          </div>
+                          {onDismissCrashAlert && (
+                            <button
+                              type="button"
+                              data-testid="dismiss-crash-pit-alert"
+                              onClick={onDismissCrashAlert}
+                              className="rounded border border-rose-400/50 bg-[#090B10] px-2 py-0.5 font-mono text-[10px] font-medium text-rose-200 hover:bg-rose-500/20 cursor-pointer whitespace-nowrap shrink-0"
+                            >
+                              Dismiss
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Core Strategy Telemetry Trio */}
+                      <div className="grid grid-cols-[0.82fr_0.68fr_1.5fr] divide-x divide-[#1B2230] rounded border border-[#1B2230] bg-[#090B10] px-2.5 py-1.5 font-mono text-xs tabular-nums">
+                        <div className="pr-2 min-w-0">
+                          <div className="text-[10px] uppercase text-slate-500">
+                            {pitStrategy.stintLimitingFactor === 'virtual_energy' ? 'Fuel / VE' : 'Fuel Left'}
+                          </div>
+                          <div className="mt-0.5 text-slate-200">
+                            {pitStrategy.lapsOfFuelLeft.toFixed(1)} laps
+                            {pitStrategy.lapsOfVeLeft !== undefined && (
+                              <span
+                                className={`block text-[10px] ${
+                                  pitStrategy.stintLimitingFactor === 'virtual_energy'
+                                    ? 'text-cyan-300 font-semibold'
+                                    : 'text-slate-500'
+                                }`}
+                              >
+                                VE: {pitStrategy.lapsOfVeLeft.toFixed(1)}L
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="px-2">
+                          <div className="text-[10px] uppercase text-slate-500">Add Fuel</div>
+                          <div className="mt-0.5 text-slate-200">
+                            {pitStrategy.fuelToAddLiters.toFixed(0)} L
+                            {car.carClass === 'Hypercar' && (
+                              <span className="block text-[10px] text-slate-500">+ 100% VE</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="pl-2 min-w-0">
+                          <div className="text-[10px] uppercase text-slate-500">Next Tires</div>
+                          <div
+                            className="mt-0.5 flex items-center gap-1.5 text-cyan-300 font-semibold truncate"
+                            data-testid="pit-tire-call-headline"
+                          >
+                            <span
+                              className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border text-[9px] font-bold leading-none ${nextVisual.badge}`}
+                            >
+                              {nextVisual.code}
+                            </span>
+                            <span className="truncate">{pitStrategy.pitTireCallHeadline}</span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 truncate">
+                            Now: <span className={currentVisual.text}>{pitStrategy.currentCompound}</span> ·{' '}
+                            {pitStrategy.pitNeededThisRace ? `Pit ${pitStrategy.pitStopDurationEstSec}s` : 'To Flag'}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* F1 Manager 24 Stint & Tire Plan Timeline */}
+                      <div
+                        data-testid="f1m-stint-timeline"
+                        className="rounded border border-[#1B2230] bg-[#090B10] px-2.5 py-1.5"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[10px] tabular-nums">
+                          <div className="flex items-center gap-1.5 text-slate-300">
+                            <span className="uppercase tracking-wider text-slate-500">
+                              Stint Plan · L{pitStrategy.currentLap}/{pitStrategy.raceLengthLaps}
+                            </span>
+                            <span className="inline-flex items-center gap-1 font-semibold">
+                              <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border text-[9px] font-bold ${currentVisual.badge}`}>
+                                {currentVisual.code}
+                              </span>
+                              <span className="text-slate-500">→</span>
+                              {pitStrategy.pitNeededThisRace ? (
+                                <span className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border text-[9px] font-bold ${nextVisual.badge}`}>
+                                  {nextVisual.code}
+                                </span>
+                              ) : (
+                                <span className="text-emerald-400">Flag</span>
+                              )}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={
+                                pitStrategy.estimatedWearAtFlagPct < 68
+                                  ? 'text-rose-400 font-semibold'
+                                  : pitStrategy.estimatedWearAtFlagPct < 78
+                                    ? 'text-amber-300'
+                                    : 'text-emerald-400'
+                              }
+                            >
+                              Flag ~{pitStrategy.estimatedWearAtFlagPct}%
+                            </span>
+                            <span className="text-slate-600" aria-hidden="true">·</span>
+                            <span className={pitStrategy.estimatedCliffLap ? 'text-amber-300' : 'text-slate-500'}>
+                              {pitStrategy.estimatedCliffLap
+                                ? `Cliff ~L${pitStrategy.estimatedCliffLap}`
+                                : 'No Cliff'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Proportional Compound Stint Bar */}
+                        <div className="mt-1 flex h-5 w-full items-stretch gap-1 overflow-hidden rounded border border-[#1B2230] bg-[#0B0E14] p-0.5">
+                          {pitStrategy.activeStints.map((stint) => {
+                            const cmp = getCompoundVisual(stint.compound);
+                            const spanLaps = Math.max(1, stint.endLap - stint.startLap + (stint.isCurrent ? 0 : 1));
+                            return (
+                              <div
+                                key={stint.stintNumber}
+                                style={{ flexGrow: spanLaps, flexBasis: 0 }}
+                                className={`relative flex min-w-[78px] items-center justify-between overflow-hidden rounded-sm border px-2 font-mono text-[10px] tabular-nums ${cmp.tint}`}
+                              >
+                                <div className={`absolute inset-x-0 top-0 h-[2px] ${cmp.stripe}`} />
+                                <div className="flex items-center gap-1 min-w-0">
+                                  <span className={`font-bold ${cmp.text}`}>{cmp.code}</span>
+                                  <span className="truncate text-slate-200">
+                                    {stint.isPitStopBefore && stint.pitLap
+                                      ? `Box L${stint.pitLap} · ${stint.actionLabel}`
+                                      : `L${stint.startLap}–${stint.endLap}`}
+                                  </span>
+                                </div>
+                                <span className="ml-1 shrink-0 text-[9px] text-slate-400">
+                                  {stint.estimatedWearAtEndPct}%
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <p
+                          data-testid="pit-rejoin-forecast"
+                          className="mt-1 font-mono text-[10px] text-slate-400 truncate"
+                          title={pitStrategy.rejoinTrafficNote}
+                        >
+                          {pitStrategy.rejoinTrafficNote}
+                        </p>
+                      </div>
+
+                      {/* F1 Manager 24 Style Strategy Suggestions (Plan Auto + Plan A / B / C) */}
+                      <div data-testid="f1m-strategy-options" className="space-y-1.5">
+                        <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-slate-500">
+                          <span>F1M Strategy Suggestions</span>
+                          <span className="normal-case tracking-normal text-slate-500">
+                            {activeOptionId === 'plan_auto' ? 'Dynamic AI active' : 'Manual override active'}
+                          </span>
+                        </div>
+
+                        {planAutoOption && (() => {
+                          const isAutoSelected = activeOptionId === 'plan_auto';
+                          const autoNextCmp = getCompoundVisual(
+                            planAutoOption.nextTireAction === 'fuel_only'
+                              ? pitStrategy.currentCompound
+                              : planAutoOption.nextCompound
+                          );
+                          const isEmergency = planAutoOption.tag === 'Emergency';
+                          return (
+                            <button
+                              type="button"
+                              data-testid="strategy-option-plan_auto"
+                              aria-pressed={isAutoSelected}
+                              title={`${planAutoOption.code}: ${planAutoOption.name} — ${planAutoOption.rationale}`}
+                              onClick={() =>
+                                onUpdateSettings({
+                                  autoSelectPitTires: true,
+                                  pitTireOverride: 'auto',
+                                })
+                              }
+                              className={`w-full rounded border px-2.5 py-1.5 text-left transition-colors cursor-pointer ${
+                                isAutoSelected
+                                  ? isEmergency
+                                    ? 'border-rose-500/60 bg-rose-500/10'
+                                    : 'border-cyan-500/60 bg-cyan-500/10'
+                                  : 'border-[#1B2230] bg-[#090B10] hover:border-cyan-500/40'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span
+                                    className={`font-mono text-[10px] font-bold uppercase whitespace-nowrap ${
+                                      isAutoSelected
+                                        ? isEmergency
+                                          ? 'text-rose-300'
+                                          : 'text-cyan-300'
+                                        : 'text-slate-200'
+                                    }`}
+                                  >
+                                    {planAutoOption.code}
+                                  </span>
+                                  <span
+                                    className={`rounded border px-1 py-0.5 font-mono text-[8px] font-semibold uppercase leading-none whitespace-nowrap ${
+                                      isEmergency
+                                        ? 'border-rose-500/40 bg-rose-500/15 text-rose-300'
+                                        : 'border-cyan-500/35 bg-cyan-500/10 text-cyan-300'
+                                    }`}
+                                  >
+                                    {isEmergency ? 'Emergency' : 'Auto-Adapt'}
+                                  </span>
+                                  <span className="truncate text-[11px] font-semibold text-slate-100">
+                                    {planAutoOption.name}
+                                  </span>
+                                </div>
+
+                                <span
+                                  className={`font-mono text-[9px] tabular-nums whitespace-nowrap shrink-0 ${
+                                    isAutoSelected
+                                      ? isEmergency
+                                        ? 'text-rose-300 font-semibold'
+                                        : 'text-cyan-300 font-semibold'
+                                      : 'text-slate-400'
+                                  }`}
+                                >
+                                  {isAutoSelected ? 'ACTIVE' : 'Click to resume'}
+                                </span>
+                              </div>
+
+                              <div className="mt-1 flex items-center justify-between gap-2 font-mono text-[9px] tabular-nums text-slate-400">
+                                <span className="truncate text-slate-400">
+                                  {planAutoOption.rationale}
+                                </span>
+                                <span className="inline-flex items-center gap-1.5 shrink-0">
+                                  <span className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border text-[8px] font-bold ${currentVisual.badge}`}>
+                                    {currentVisual.code}
+                                  </span>
+                                  <span className="text-slate-600">→</span>
+                                  {planAutoOption.pitRequired ? (
+                                    <>
+                                      <span className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border text-[8px] font-bold ${autoNextCmp.badge}`}>
+                                        {autoNextCmp.code}
+                                      </span>
+                                      <span className="text-slate-300">L{planAutoOption.pitLap}</span>
+                                    </>
+                                  ) : (
+                                    <span className="text-emerald-300">Flag</span>
+                                  )}
+                                  <span className="text-slate-600">·</span>
+                                  <span className="text-slate-400">{planAutoOption.projectedFinishWearPct}%</span>
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })()}
+
+                        <div className="grid grid-cols-1 xl:grid-cols-3 gap-1.5">
+                          {fixedPlanOptions.map((opt) => {
+                            const isSelected = activeOptionId === opt.id;
+                            const optNextCmp = getCompoundVisual(
+                              opt.nextTireAction === 'fuel_only'
+                                ? pitStrategy.currentCompound
+                                : opt.nextCompound
+                            );
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                data-testid={`strategy-option-${opt.id}`}
+                                aria-pressed={isSelected}
+                                title={`${opt.code}: ${opt.name} — ${opt.rationale}`}
+                                onClick={() =>
+                                  onUpdateSettings({
+                                    autoSelectPitTires: opt.autoSelectPitTires,
+                                    pitTireOverride: opt.pitTireOverride,
+                                  })
+                                }
+                                className={`flex flex-col justify-between rounded border px-2 py-1.5 text-left transition-colors cursor-pointer min-w-0 ${
+                                  isSelected
+                                    ? 'border-cyan-500/60 bg-cyan-500/10'
+                                    : 'border-[#1B2230] bg-[#090B10] hover:border-[#2C374F]'
+                                }`}
+                              >
+                                <div>
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span
+                                      className={`font-mono text-[10px] font-bold uppercase whitespace-nowrap ${
+                                        isSelected ? 'text-cyan-300' : 'text-slate-300'
+                                      }`}
+                                    >
+                                      {opt.code}
+                                    </span>
+                                    <span
+                                      className={`font-mono text-[9px] tabular-nums whitespace-nowrap ${
+                                        isSelected
+                                          ? 'text-cyan-300 font-semibold'
+                                          : opt.tag === 'Emergency'
+                                            ? 'text-rose-400'
+                                            : opt.tag === 'Recommended'
+                                              ? 'text-emerald-400'
+                                              : 'text-slate-400'
+                                      }`}
+                                    >
+                                      {isSelected ? 'ACTIVE' : opt.stopLossSec === 0 ? '0s loss' : `-${opt.stopLossSec}s`}
+                                    </span>
+                                  </div>
+
+                                  <div className="mt-0.5 truncate text-[11px] font-medium text-slate-100">
+                                    {opt.name}
+                                  </div>
+                                </div>
+
+                                <div className="mt-1 flex items-center justify-between gap-1 font-mono text-[9px] tabular-nums text-slate-400">
+                                  <span className="inline-flex items-center gap-1 truncate">
+                                    <span className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border text-[8px] font-bold ${currentVisual.badge}`}>
+                                      {currentVisual.code}
+                                    </span>
+                                    <span className="text-slate-600">→</span>
+                                    {opt.pitRequired ? (
+                                      <>
+                                        <span className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border text-[8px] font-bold ${optNextCmp.badge}`}>
+                                          {optNextCmp.code}
+                                        </span>
+                                        <span className="truncate text-slate-300">L{opt.pitLap}</span>
+                                      </>
+                                    ) : (
+                                      <span className="text-emerald-300">Flag</span>
+                                    )}
+                                  </span>
+                                  <span className="shrink-0 text-slate-500">
+                                    {opt.projectedFinishWearPct}%
+                                  </span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] leading-snug text-slate-400 truncate" title={pitStrategy.tireSelectionReason} data-testid="pit-tire-reason">
+                        {pitStrategy.tireSelectionReason}
+                      </p>
+                      {pitStrategy.learnedAdaptationNote && (
+                        <p
+                          className="font-mono text-[10px] leading-snug text-cyan-300/90 truncate"
+                          title={pitStrategy.learnedAdaptationNote}
+                          data-testid="pit-learned-adaptation"
+                        >
+                          {pitStrategy.learnedAdaptationNote}
+                        </p>
+                      )}
+
+                      {/* LMU Pit MFD Quick Actions */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-[#1B2230] bg-[#090B10] px-2.5 py-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            data-testid="lmu-preselect-tires-toggle"
+                            title="Pre-select recommended tires & repairs inside Le Mans Ultimate's Pit MFD via local :6397 API."
+                            onClick={() =>
+                              onUpdateSettings({
+                                preselectPitTiresInLmu: !preselectOn,
+                              })
+                            }
+                            className={`rounded border px-2 py-1 font-mono text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                              preselectOn
+                                ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+                                : 'border-[#273145] bg-[#10141D] text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200'
+                            }`}
+                          >
+                            Preselect in LMU: {preselectOn ? 'ON' : 'OFF'}
+                          </button>
+                          {onSyncPitMenuToLmu && (
+                            <button
+                              type="button"
+                              data-testid="sync-lmu-mfd-btn"
+                              onClick={onSyncPitMenuToLmu}
+                              className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 font-mono text-[10px] font-medium text-cyan-200 hover:bg-cyan-500/20 cursor-pointer whitespace-nowrap"
+                            >
+                              Sync MFD
+                            </button>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          data-testid="auto-pit-tires-toggle"
+                          onClick={() => {
+                            const nextAuto = !(settings.autoSelectPitTires ?? true);
+                            onUpdateSettings({
+                              autoSelectPitTires: nextAuto,
+                              ...(nextAuto ? { pitTireOverride: 'auto' } : {}),
+                            });
+                          }}
+                          className={`rounded border px-2 py-1 font-mono text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                            (settings.autoSelectPitTires ?? true)
+                              ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200'
+                              : 'border-[#273145] bg-[#10141D] text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          Plan Auto: {(settings.autoSelectPitTires ?? true) ? 'ON' : 'OFF'}
+                        </button>
+                      </div>
+
+                      {(preselectOn || (pitMfdSyncStatus && pitMfdSyncStatus.state !== 'idle')) &&
+                        effectiveMfdMessage && (
+                          <p
+                            data-testid="lmu-mfd-sync-status"
+                            className={`font-mono text-[10px] leading-snug ${
+                              pitMfdSyncStatus?.state === 'applied'
+                                ? 'text-emerald-400'
+                                : pitMfdSyncStatus?.state === 'error'
+                                  ? 'text-rose-400'
+                                  : 'text-amber-300'
+                            }`}
+                          >
+                            {effectiveMfdMessage}
+                          </p>
+                        )}
+
+                      {/* Progressive Disclosure: Pit Race Mode & Manual Tire Override */}
+                      {pitConfigOpen && (
+                        <div className="space-y-2 rounded border border-[#1B2230] bg-[#090B10] p-2.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <select
+                              aria-label="Pit race mode"
+                              data-testid="pit-race-mode-select"
+                              value={settings.pitRaceMode ?? 'auto'}
+                              onChange={(e) =>
+                                onUpdateSettings({ pitRaceMode: e.target.value as PitRaceMode })
+                              }
+                              className="h-7 flex-1 min-w-[155px] rounded border border-[#273145] bg-[#10141D] px-2 text-[11px] text-slate-200 focus:border-cyan-500 focus:outline-none"
+                            >
+                              <option value="auto">Mode: Auto ({pitStrategy.raceModeLabel})</option>
+                              <option value="short_online">Short Online / Beginner Race</option>
+                              <option value="standard_online">Normal Online Race</option>
+                              <option value="endurance">Endurance Stint (2h+)</option>
+                              <option value="practice_quali">Practice / Qualifying</option>
+                            </select>
+
+                            {!(settings.autoSelectPitTires ?? true) && (
+                              <select
+                                aria-label="Manual pit tire choice"
+                                data-testid="manual-pit-tire-select"
+                                value={settings.pitTireOverride ?? 'auto'}
+                                onChange={(e) =>
+                                  onUpdateSettings({ pitTireOverride: e.target.value as PitTireOverride })
+                                }
+                                className="h-7 rounded border border-[#273145] bg-[#10141D] px-2 text-[11px] text-slate-200 focus:border-cyan-500 focus:outline-none"
+                              >
+                                <option value="auto">Use Recommended</option>
+                                <option value="keep">Keep Tires (0s)</option>
+                                <option value="fronts_medium">2x Fronts Medium (~7s)</option>
+                                <option value="all_medium">4x Medium</option>
+                                <option value="all_soft">4x Soft</option>
+                                <option value="all_hard">4x Hard</option>
+                                <option value="all_wet">4x Wet</option>
+                              </select>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-400">{pitStrategy.engineerSummary}</p>
+                          <p className="text-[10px] text-slate-500" data-testid="pit-control-mode-note">
+                            {pitStrategy.controlModeNote}
+                          </p>
+                        </div>
                       )}
                     </div>
-
-                    <button
-                      type="button"
-                      data-testid="auto-pit-tires-toggle"
-                      onClick={() =>
-                        onUpdateSettings({
-                          autoSelectPitTires: !(settings.autoSelectPitTires ?? true),
-                        })
-                      }
-                      className={`rounded border px-2 py-1 font-mono text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                        (settings.autoSelectPitTires ?? true)
-                          ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200'
-                          : 'border-[#273145] bg-[#10141D] text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Auto Tire Plan: {(settings.autoSelectPitTires ?? true) ? 'ON' : 'OFF'}
-                    </button>
-                  </div>
-
-                  {((settings.preselectPitTiresInLmu ?? false) ||
-                    (pitMfdSyncStatus && pitMfdSyncStatus.state !== 'idle')) &&
-                    pitMfdSyncStatus && (
-                      <p
-                        data-testid="lmu-mfd-sync-status"
-                        className={`font-mono text-[10px] leading-snug ${
-                          pitMfdSyncStatus.state === 'applied'
-                            ? 'text-emerald-400'
-                            : pitMfdSyncStatus.state === 'error'
-                              ? 'text-rose-400'
-                              : 'text-amber-300'
-                        }`}
-                      >
-                        {pitMfdSyncStatus.message}
-                      </p>
-                    )}
-
-                  {/* Progressive Disclosure: Pit Race Mode & Manual Tire Override */}
-                  {pitConfigOpen && (
-                    <div className="space-y-2 rounded border border-[#1B2230] bg-[#090B10] p-2.5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <select
-                          aria-label="Pit race mode"
-                          data-testid="pit-race-mode-select"
-                          value={settings.pitRaceMode ?? 'auto'}
-                          onChange={(e) =>
-                            onUpdateSettings({ pitRaceMode: e.target.value as PitRaceMode })
-                          }
-                          className="h-7 flex-1 min-w-[155px] rounded border border-[#273145] bg-[#10141D] px-2 text-[11px] text-slate-200 focus:border-cyan-500 focus:outline-none"
-                        >
-                          <option value="auto">Mode: Auto ({pitStrategy.raceModeLabel})</option>
-                          <option value="short_online">Short Online / Beginner Race</option>
-                          <option value="standard_online">Normal Online Race</option>
-                          <option value="endurance">Endurance Stint (2h+)</option>
-                          <option value="practice_quali">Practice / Qualifying</option>
-                        </select>
-
-                        {!(settings.autoSelectPitTires ?? true) && (
-                          <select
-                            aria-label="Manual pit tire choice"
-                            data-testid="manual-pit-tire-select"
-                            value={settings.pitTireOverride ?? 'auto'}
-                            onChange={(e) =>
-                              onUpdateSettings({ pitTireOverride: e.target.value as PitTireOverride })
-                            }
-                            className="h-7 rounded border border-[#273145] bg-[#10141D] px-2 text-[11px] text-slate-200 focus:border-cyan-500 focus:outline-none"
-                          >
-                            <option value="auto">Use Recommended</option>
-                            <option value="keep">Keep Tires (0s)</option>
-                            <option value="fronts_medium">2x Fronts Medium (~7s)</option>
-                            <option value="all_medium">4x Medium</option>
-                            <option value="all_soft">4x Soft</option>
-                            <option value="all_hard">4x Hard</option>
-                            <option value="all_wet">4x Wet</option>
-                          </select>
-                        )}
-                      </div>
-                      <p className="text-[10px] text-slate-500" data-testid="pit-control-mode-note">
-                        {pitStrategy.controlModeNote}
-                      </p>
-                    </div>
-                  )}
-                </div>
+                  );
+                })()
               ) : (
                 <div className="space-y-2.5">
                   {/* Engineer Autonomy + Driver Experience */}

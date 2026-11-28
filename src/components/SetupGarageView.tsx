@@ -88,6 +88,7 @@ export function SetupGarageView({
   setup,
   driverProfile,
   setupIntake,
+  settings,
   pitStrategy,
   cornerComparisons,
   latestFrame,
@@ -714,26 +715,42 @@ export function SetupGarageView({
             </div>
           )}
 
-          {pitMfdSyncStatus && pitMfdSyncStatus.state !== 'idle' && (
-            <p
-              data-testid="garage-lmu-mfd-sync-status"
-              className={`mt-2 font-mono text-[11px] ${
-                pitMfdSyncStatus.state === 'applied'
-                  ? 'text-emerald-400'
-                  : pitMfdSyncStatus.state === 'error'
-                    ? 'text-rose-400'
-                    : 'text-amber-300'
-              }`}
-            >
-              {pitMfdSyncStatus.message}
-            </p>
-          )}
+          {((settings?.preselectPitTiresInLmu ?? false) ||
+            (pitMfdSyncStatus && pitMfdSyncStatus.state !== 'idle')) &&
+            pitMfdSyncStatus && (
+              <p
+                data-testid="garage-lmu-mfd-sync-status"
+                className={`mt-2 font-mono text-[11px] ${
+                  pitMfdSyncStatus.state === 'applied'
+                    ? 'text-emerald-400'
+                    : pitMfdSyncStatus.state === 'error'
+                      ? 'text-rose-400'
+                      : 'text-amber-300'
+                }`}
+              >
+                {pitMfdSyncStatus.state === 'idle' && (settings?.preselectPitTiresInLmu ?? false)
+                  ? 'Armed — waiting for live LMU session (:6397) to preselect pit tires & repairs.'
+                  : pitMfdSyncStatus.message}
+              </p>
+            )}
 
           <div className="mt-3 grid grid-cols-4 gap-2 rounded-md border border-[#1B2230] bg-[#090B10] p-3 font-mono tabular-nums">
             <div>
-              <div className="text-[10px] uppercase text-slate-500">Pit Window</div>
-              <div className={`text-xs sm:text-sm font-semibold ${pitStrategy.crashAlertActive ? 'text-rose-400' : 'text-cyan-400'}`}>
-                {pitStrategy.crashAlertActive ? 'BOX NOW' : `Lap ${pitStrategy.recommendedPitLap}`}
+              <div className="text-[10px] uppercase text-slate-500">Pit Plan</div>
+              <div
+                className={`text-xs sm:text-sm font-semibold ${
+                  pitStrategy.crashAlertActive
+                    ? 'text-rose-400'
+                    : pitStrategy.pitNeededThisRace
+                      ? 'text-cyan-400'
+                      : 'text-emerald-400'
+                }`}
+              >
+                {pitStrategy.crashAlertActive
+                  ? 'BOX NOW'
+                  : pitStrategy.pitNeededThisRace
+                    ? `Box L${pitStrategy.pitWindowStartLap}–${pitStrategy.pitWindowEndLap}`
+                    : `No Stop (L${pitStrategy.raceLengthLaps})`}
               </div>
             </div>
             <div>
@@ -741,12 +758,16 @@ export function SetupGarageView({
               <div className="text-xs sm:text-sm font-semibold text-slate-100">{pitStrategy.fuelToAddLiters.toFixed(0)} L</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase text-slate-500">Pit MFD Tires</div>
-              <div className="text-xs sm:text-sm font-semibold text-cyan-300 truncate">{pitStrategy.pitTireCallHeadline}</div>
+              <div className="text-[10px] uppercase text-slate-500">Now → Next Tires</div>
+              <div className="text-xs sm:text-sm font-semibold text-cyan-300 truncate">
+                {pitStrategy.currentCompound} → {pitStrategy.pitTireCallHeadline}
+              </div>
             </div>
             <div>
               <div className="text-[10px] uppercase text-slate-500">Est. Stop</div>
-              <div className="text-xs sm:text-sm font-semibold text-slate-100">{pitStrategy.pitStopDurationEstSec}s</div>
+              <div className="text-xs sm:text-sm font-semibold text-slate-100">
+                {pitStrategy.pitNeededThisRace ? `${pitStrategy.pitStopDurationEstSec}s` : '0s'}
+              </div>
             </div>
           </div>
           <p className="mt-2 text-xs text-slate-300">{pitStrategy.tireSelectionReason}</p>

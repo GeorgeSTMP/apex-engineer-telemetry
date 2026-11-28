@@ -7,6 +7,7 @@ import type {
   CornerDefinition,
   DriverProfile,
   DriverSkillMetrics,
+  PitStrategyPlan,
   PriorityCornerDrill,
   ReferenceSample,
   SimSessionType,
@@ -89,7 +90,18 @@ export function evaluateLiveTelemetry(
   cooldowns: CooldownMap,
   driverProfile?: DriverProfile,
   car?: CarProfile,
-  context?: { sessionType?: SimSessionType }
+  context?: {
+    sessionType?: SimSessionType;
+    pitStrategy?: Pick<
+      PitStrategyPlan,
+      | 'pitNeededThisRace'
+      | 'recommendedPitLap'
+      | 'pitTireCallHeadline'
+      | 'fuelToAddLiters'
+      | 'raceModeLabel'
+      | 'crashAlertActive'
+    >;
+  }
 ): { callout: CoachCallout | null; nextCooldowns: CooldownMap } {
   const now = frame.timestampMs;
   const activeSessionType: SimSessionType = context?.sessionType ?? frame.sessionType ?? 'unknown';
@@ -638,10 +650,15 @@ export function evaluateLiveTelemetry(
     frame.virtualEnergyPct > 14 &&
     frame.virtualEnergyPct <= 24;
 
+  const strategyAllowsPitWindow = context?.pitStrategy
+    ? context.pitStrategy.pitNeededThisRace
+    : true;
+
   if (
     settings.pitWindowCountdownEnabled &&
     activeSessionType !== 'practice' &&
     activeSessionType !== 'qualifying' &&
+    strategyAllowsPitWindow &&
     (lowFuelWindow || lowVeWindow) &&
     canFire('strategy', 28000, false, 'pit_window')
   ) {
@@ -658,18 +675,28 @@ export function evaluateLiveTelemetry(
         ? Math.max(0.8, frame.virtualEnergyPct / veBurn)
         : null;
     const estLapsLeft = estVeLapsLeft !== null ? Math.min(estFuelLapsLeft, estVeLapsLeft) : estFuelLapsLeft;
+    const stratTireClause = context?.pitStrategy
+      ? `, ${context.pitStrategy.pitTireCallHeadline}`
+      : '';
+    const stratBoxLapClause = context?.pitStrategy
+      ? ` (Target Box L${context.pitStrategy.recommendedPitLap}${
+          context.pitStrategy.fuelToAddLiters > 0
+            ? `, +${context.pitStrategy.fuelToAddLiters.toFixed(0)}L`
+            : ''
+        }${stratTireClause})`
+      : '';
     const msg =
       protocol === 'pro_terse'
         ? isHypercarClass
           ? lowVeWindow
-            ? `Pit window open (VE ${Math.round(frame.virtualEnergyPct ?? 0)}%) — MFD fuel + VE, repairs OFF.`
-            : `Pit window open (${frame.fuelLiters.toFixed(1)}L) — MFD fuel + VE, repairs OFF.`
-          : `Pit window open (${frame.fuelLiters.toFixed(1)}L) — MFD fuel, repairs OFF.`
+            ? `Pit window open (VE ${Math.round(frame.virtualEnergyPct ?? 0)}%)${stratBoxLapClause} — MFD fuel + VE${stratTireClause}, repairs OFF.`
+            : `Pit window open (${frame.fuelLiters.toFixed(1)}L)${stratBoxLapClause} — MFD fuel + VE${stratTireClause}, repairs OFF.`
+          : `Pit window open (${frame.fuelLiters.toFixed(1)}L)${stratBoxLapClause} — MFD fuel${stratTireClause}, repairs OFF.`
         : isHypercarClass
           ? lowVeWindow
-            ? `Pit window open: Virtual Energy at ${Math.round(frame.virtualEnergyPct ?? 0)}% (~${estLapsLeft.toFixed(1)} laps left). Pre-set MFD 100% VE + fuel, repairs OFF unless damaged, and prep pit limiter.`
-            : `Pit window open: ${frame.fuelLiters.toFixed(1)} liters remaining (~${estLapsLeft.toFixed(1)} laps). Pre-set MFD fuel + 100% VE, repairs OFF unless damaged, and prep limiter.`
-          : `Pit window open: ${frame.fuelLiters.toFixed(1)} liters remaining (~${estLapsLeft.toFixed(1)} laps). Pre-set MFD fuel, repairs OFF unless damaged, and prep pit limiter.`;
+            ? `Pit window open: Virtual Energy at ${Math.round(frame.virtualEnergyPct ?? 0)}% (~${estLapsLeft.toFixed(1)} laps left)${stratBoxLapClause}. Pre-set MFD 100% VE + fuel${stratTireClause}, repairs OFF unless damaged, and prep pit limiter.`
+            : `Pit window open: ${frame.fuelLiters.toFixed(1)} liters remaining (~${estLapsLeft.toFixed(1)} laps)${stratBoxLapClause}. Pre-set MFD fuel + 100% VE${stratTireClause}, repairs OFF unless damaged, and prep limiter.`
+          : `Pit window open: ${frame.fuelLiters.toFixed(1)} liters remaining (~${estLapsLeft.toFixed(1)} laps)${stratBoxLapClause}. Pre-set MFD fuel${stratTireClause}, repairs OFF unless damaged, and prep limiter.`;
     return {
       callout: makeCallout('strategy', 'warning', 'Pit Window', msg, undefined, 'pit_window'),
       nextCooldowns,
