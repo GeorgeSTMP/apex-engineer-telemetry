@@ -282,12 +282,20 @@ export function TelemetryLabView({
   return (
     <div className="flex flex-col gap-5" data-testid="telemetry-lab-view">
       {/* Top Lap Summary & Trophi.ai Skill Strip */}
-      <section className="rounded-lg border border-[#1B2230] bg-[#10141D] p-5">
+      <section
+        data-testid="debrief-mode-banner"
+        className="rounded-2xl border border-cyan-500/25 bg-gradient-to-r from-[#0A1620] via-[#10141D] to-[#0B0F17] p-5"
+      >
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#1B2230] pb-4">
           <div>
-            <h1 className="font-display text-xl font-bold text-slate-100">
-              Telemetry Trace &amp; Corner Analysis
-            </h1>
+            <div className="flex items-center gap-2">
+              <span className="rounded-md bg-cyan-500 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-950">
+                Debrief
+              </span>
+              <h1 className="font-display text-xl font-bold text-slate-100">
+                Telemetry Trace &amp; Corner Analysis
+              </h1>
+            </div>
             <p className="mt-0.5 text-xs text-slate-400">
               {track.name} · {car.name} ·{' '}
               {lapSource === 'recorded' && hasRecordedLap

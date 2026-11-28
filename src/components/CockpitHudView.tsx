@@ -124,30 +124,42 @@ export function CockpitHudView({
   };
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4" data-testid="cockpit-hud-view">
-      {/* Top Distraction-Free Cockpit Banner */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#1B2230] bg-[#10141D] px-4 py-3">
+    <div
+      className="mx-auto flex max-w-6xl flex-col gap-4"
+      data-testid="cockpit-hud-view"
+      style={{
+        background:
+          'radial-gradient(ellipse 80% 50% at 50% -10%, rgba(34,211,238,0.12), transparent 55%), radial-gradient(ellipse 60% 40% at 100% 0%, rgba(245,158,11,0.08), transparent 45%)',
+      }}
+    >
+      <div
+        data-testid="drive-mode-banner"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-500/35 bg-gradient-to-r from-[#0A1620] via-[#0B0F17] to-[#12100A] px-4 py-3"
+      >
         <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
             onClick={onOpenPitWall}
             data-testid="cockpit-back-pitwall-btn"
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#273145] bg-[#090B10] px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:border-cyan-500/50 hover:text-cyan-200 cursor-pointer whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-[#273145] bg-[#090B10] px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:border-cyan-500/50 hover:text-cyan-200 cursor-pointer whitespace-nowrap shrink-0"
           >
             <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Pit Wall</span>
+            <span>Engineer</span>
           </button>
           <div className="min-w-0">
-            <div className="font-display text-sm font-semibold text-slate-100 truncate">
-              {focusHeading}
+            <div className="flex items-center gap-2">
+              <span className="rounded-md bg-cyan-500 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-950">
+                Drive
+              </span>
+              <span className="font-display text-base font-bold text-slate-50 truncate">{focusHeading}</span>
             </div>
-            <div className="text-xs text-slate-400 truncate">
+            <div className="mt-0.5 text-xs text-slate-400 truncate">
               {activeCorner ? activeCorner.coachingCue : upcomingCorner.coachingCue}
             </div>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-5 font-mono text-xs tabular-nums shrink-0">
+        <div className="flex flex-wrap items-center gap-4 font-mono text-xs tabular-nums shrink-0">
           <div>
             <span className="text-slate-500">LAP </span>
             <span className="font-semibold text-slate-100" data-testid="live-lap-number">
@@ -157,7 +169,7 @@ export function CockpitHudView({
           <div>
             <span className="text-slate-500">FUEL </span>
             <span className="font-semibold text-slate-100">
-              {frame.fuelLiters.toFixed(1)}L ({pitStrategy.lapsOfFuelLeft.toFixed(1)}Laps)
+              {frame.fuelLiters.toFixed(1)}L · {pitStrategy.lapsOfFuelLeft.toFixed(1)} laps
             </span>
           </div>
           {car.carClass === 'Hypercar' && typeof frame.virtualEnergyPct === 'number' && (
@@ -186,35 +198,34 @@ export function CockpitHudView({
             </span>
           </div>
           <div data-testid="cockpit-pit-tire-call">
-            <span className="text-slate-500">MFD TIRE </span>
+            <span className="text-slate-500">TIRE </span>
             <span className="font-semibold text-cyan-300">{pitStrategy.pitTireCallHeadline}</span>
           </div>
           <span
-            className={`font-semibold ${
+            className={`rounded-md px-2 py-0.5 font-bold ${
               frame.flagState === 'yellow'
-                ? 'text-amber-400'
+                ? 'bg-amber-500/20 text-amber-300'
                 : frame.flagState === 'blue'
-                  ? 'text-cyan-300'
-                  : 'text-emerald-400'
+                  ? 'bg-cyan-500/20 text-cyan-300'
+                  : 'bg-emerald-500/20 text-emerald-300'
             }`}
           >
             {frame.flagState === 'yellow'
               ? 'YELLOW'
               : frame.flagState === 'blue'
-                ? 'BLUE FLAG'
+                ? 'BLUE'
                 : 'GREEN'}
           </span>
         </div>
       </div>
 
-      {/* Primary Driver Focal Plane: Delta, Speed, Gear & RPM */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        <section className="flex flex-col justify-between rounded-lg border border-[#1B2230] bg-[#10141D] p-5 lg:col-span-8">
-          <div className="grid grid-cols-3 items-baseline gap-4 border-b border-[#1B2230] pb-4 font-mono tabular-nums">
+        <section className="flex flex-col justify-between rounded-2xl border border-cyan-500/20 bg-[#0B0F17]/90 p-5 lg:col-span-8 shadow-[0_0_40px_rgba(34,211,238,0.06)]">
+          <div className="grid grid-cols-3 items-baseline gap-4 border-b border-[#1B2230] pb-5 font-mono tabular-nums">
             <div>
-              <div className="text-[11px] uppercase tracking-wider text-slate-500">Delta to Ref</div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Delta</div>
               <div
-                className={`mt-1 text-4xl sm:text-5xl font-bold tracking-tight ${
+                className={`mt-1 text-5xl sm:text-6xl font-black tracking-tight ${
                   frame.deltaSec <= 0 ? 'text-emerald-400' : 'text-amber-400'
                 }`}
                 data-testid="live-delta"
@@ -224,9 +235,9 @@ export function CockpitHudView({
             </div>
 
             <div className="text-center">
-              <div className="text-[11px] uppercase tracking-wider text-slate-500">Speed</div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Speed</div>
               <div
-                className="mt-1 text-4xl sm:text-5xl font-bold tracking-tight text-slate-100"
+                className="mt-1 text-5xl sm:text-6xl font-black tracking-tight text-slate-50"
                 data-testid="live-speed"
               >
                 {Math.round(frame.speedKmh)}
@@ -235,9 +246,9 @@ export function CockpitHudView({
             </div>
 
             <div className="text-right">
-              <div className="text-[11px] uppercase tracking-wider text-slate-500">Gear</div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Gear</div>
               <div
-                className="mt-1 text-4xl sm:text-5xl font-bold tracking-tight text-cyan-400"
+                className="mt-1 text-5xl sm:text-6xl font-black tracking-tight text-cyan-400"
                 data-testid="live-gear"
               >
                 {frame.gear === 0 ? 'N' : frame.gear}
@@ -245,15 +256,14 @@ export function CockpitHudView({
             </div>
           </div>
 
-          {/* RPM Shift Bar */}
-          <div className="mt-4">
-            <div className="mb-1 flex justify-between font-mono text-[11px] tabular-nums text-slate-400">
-              <span>Engine RPM</span>
+          <div className="mt-5">
+            <div className="mb-1.5 flex justify-between font-mono text-[11px] tabular-nums text-slate-400">
+              <span>RPM</span>
               <span>
                 {frame.rpm} / {frame.maxRpm}
               </span>
             </div>
-            <div className="h-2.5 w-full overflow-hidden rounded-sm bg-[#090B10]">
+            <div className="h-3 w-full overflow-hidden rounded-full bg-[#090B10]">
               <div
                 className={`h-full transition-all duration-75 ${
                   rpmPct > 92 ? 'bg-rose-500' : rpmPct > 82 ? 'bg-amber-400' : 'bg-cyan-400'
@@ -263,28 +273,26 @@ export function CockpitHudView({
             </div>
           </div>
 
-          {/* Trophi.ai Live Reference vs You Pedal Ghost Ribbon */}
           <div className="mt-5" data-testid="live-pedal-ribbon">
             <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 font-mono text-[11px]">
               <div className="flex items-center gap-3">
                 <span className="uppercase tracking-wider text-slate-300 font-semibold">
-                  Pedal Trace (You vs Pro Ref)
+                  Pedals · You vs Ref
                 </span>
-                <span className="text-emerald-400">― Thr {Math.round(frame.throttle * 100)}%</span>
-                <span className="text-rose-400">― Brk {Math.round(frame.brake * 100)}%</span>
-                <span className="text-slate-400">-- Ref Ghost</span>
+                <span className="text-emerald-400">Thr {Math.round(frame.throttle * 100)}%</span>
+                <span className="text-rose-400">Brk {Math.round(frame.brake * 100)}%</span>
               </div>
               <span className={pedalPaths.hasOverlapNow ? 'text-amber-400 font-semibold' : 'text-slate-500'}>
                 {pedalPaths.hasOverlapNow
-                  ? 'Pedal Overlap'
+                  ? 'Overlap'
                   : frame.absActive
-                    ? 'ABS Active'
+                    ? 'ABS'
                     : frame.tcActive
-                      ? 'TC Active'
-                      : 'Clean Trace'}
+                      ? 'TC'
+                      : 'Clean'}
               </span>
             </div>
-            <div className="rounded-md border border-[#1B2230] bg-[#090B10] p-2">
+            <div className="rounded-xl border border-[#1B2230] bg-[#090B10] p-2">
               <svg
                 viewBox={`0 0 ${pedalPaths.w} ${pedalPaths.h}`}
                 preserveAspectRatio="none"
@@ -325,7 +333,6 @@ export function CockpitHudView({
             </div>
           </div>
 
-          {/* 4-Corner Compact Tire Temp Strip */}
           <div className="mt-4 grid grid-cols-4 divide-x divide-[#1B2230] border-t border-[#1B2230] pt-3 font-mono text-xs tabular-nums">
             {(['fl', 'fr', 'rl', 'rr'] as const).map((k, idx) => {
               const t = frame.tireTempC[k];
@@ -347,8 +354,7 @@ export function CockpitHudView({
           </div>
         </section>
 
-        {/* Right 4 Cols: Track Minimap + Live Engineer Voice Comms */}
-        <aside className="flex flex-col justify-between gap-4 rounded-lg border border-[#1B2230] bg-[#10141D] p-5 lg:col-span-4">
+        <aside className="flex flex-col justify-between gap-4 rounded-2xl border border-amber-500/20 bg-[#10141D] p-5 lg:col-span-4">
           <div>
             <div className="flex items-center justify-between border-b border-[#1B2230] pb-2.5">
               <span className="font-display text-sm font-semibold text-slate-100">{track.name}</span>
@@ -403,7 +409,7 @@ export function CockpitHudView({
                   type="button"
                   onClick={onToggleLiveVoice}
                   data-testid="live-voice-toggle"
-                  className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-semibold cursor-pointer whitespace-nowrap ${
+                  className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-semibold cursor-pointer whitespace-nowrap ${
                     liveVoiceStatus === 'listening' || liveVoiceStatus === 'speaking'
                       ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-300'
                       : 'border-cyan-500 bg-cyan-500 text-slate-950 hover:bg-cyan-400'
@@ -425,7 +431,7 @@ export function CockpitHudView({
                   type="button"
                   onClick={() => onUpdateSettings({ voiceEnabled: !settings.voiceEnabled })}
                   aria-label={settings.voiceEnabled ? 'Mute voice radio' : 'Enable voice radio'}
-                  className="inline-flex items-center rounded-md border border-[#273145] bg-[#090B10] p-1.5 text-slate-300 hover:text-cyan-300 cursor-pointer"
+                  className="inline-flex items-center rounded-xl border border-[#273145] bg-[#090B10] p-1.5 text-slate-300 hover:text-cyan-300 cursor-pointer"
                 >
                   {settings.voiceEnabled ? (
                     <Volume2 className="h-3.5 w-3.5 text-cyan-400" aria-hidden="true" />
@@ -447,13 +453,13 @@ export function CockpitHudView({
                 onChange={(e) => setQuestionInput(e.target.value)}
                 placeholder="Ask engineer..."
                 aria-label="Ask race engineer on pit radio"
-                className="h-8 flex-1 rounded-md border border-[#273145] bg-[#090B10] px-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-500 focus:outline-none"
+                className="h-9 flex-1 rounded-xl border border-[#273145] bg-[#090B10] px-3 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-500 focus:outline-none"
               />
               <button
                 type="submit"
                 disabled={!questionInput.trim() || isAskingEngineer}
                 aria-label="Send pit radio message"
-                className="inline-flex h-8 items-center gap-1 rounded-md bg-cyan-500 px-2.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-40 cursor-pointer whitespace-nowrap"
+                className="inline-flex h-9 items-center gap-1 rounded-xl bg-cyan-500 px-3 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-40 cursor-pointer whitespace-nowrap"
               >
                 <Send className="h-3 w-3" aria-hidden="true" />
                 <span>{isAskingEngineer ? '...' : 'Send'}</span>

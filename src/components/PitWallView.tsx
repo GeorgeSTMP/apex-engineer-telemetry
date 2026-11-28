@@ -348,18 +348,58 @@ export function PitWallView({
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Standby Quick-Start Guidance Banner */}
+      <div
+        data-testid="engineer-mode-banner"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/30 bg-gradient-to-r from-[#16120A] via-[#0F1420] to-[#0A1620] px-4 py-3"
+      >
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="rounded-md bg-amber-400 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-950">
+              Engineer
+            </span>
+            <h2 className="font-display text-base font-bold text-slate-50">Pit Wall</h2>
+          </div>
+          <p className="mt-0.5 text-xs text-slate-400">
+            Map · vitals · radio · strategy — Drive mode is for the overlay
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onOpenCockpitHud && (
+            <button
+              type="button"
+              onClick={onOpenCockpitHud}
+              data-testid="engineer-open-drive-btn"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25 cursor-pointer whitespace-nowrap"
+            >
+              <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Open Drive</span>
+            </button>
+          )}
+          {onOpenSettings && (
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              data-testid="engineer-open-settings-btn"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#273145] bg-[#090B10] px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200 cursor-pointer whitespace-nowrap"
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5 text-cyan-400" aria-hidden="true" />
+              <span>Settings</span>
+            </button>
+          )}
+        </div>
+      </div>
+
       {isStandby && (
         <div
           data-testid="pitwall-standby-quickstart"
-          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan-500/30 bg-[#0F1420] px-4 py-2"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-500/30 bg-[#0F1420] px-4 py-2.5"
         >
           <div className="flex items-center gap-2.5 text-xs">
             <span className="h-2 w-2 shrink-0 rounded-full bg-cyan-400" aria-hidden="true" />
             <span className="font-medium text-slate-200">
               {simStatus?.gameRunning
                 ? `${simStatus.gameName ?? 'Simulator'} detected in menus — drive out on track for live coaching`
-                : 'Ready on Pit Wall — open Le Mans Ultimate for auto-sync or launch a practice stint'}
+                : 'Ready — open Le Mans Ultimate for auto-sync or launch a practice demo'}
             </span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -368,10 +408,10 @@ export function PitWallView({
                 type="button"
                 onClick={onOpenSimBridge}
                 data-testid="standby-open-bridge-btn"
-                className="inline-flex items-center gap-1.5 rounded border border-[#273145] bg-[#090B10] px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200 cursor-pointer whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-[#273145] bg-[#090B10] px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200 cursor-pointer whitespace-nowrap"
               >
                 <Cpu className="h-3.5 w-3.5 text-cyan-400" aria-hidden="true" />
-                <span>Sim Bridge &amp; Test Lab</span>
+                <span>Connection</span>
               </button>
             )}
             {onToggleLive && (
@@ -379,10 +419,10 @@ export function PitWallView({
                 type="button"
                 onClick={onToggleLive}
                 data-testid="standby-start-demo-btn"
-                className="inline-flex items-center gap-1.5 rounded bg-cyan-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-cyan-400 cursor-pointer whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-cyan-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-cyan-400 cursor-pointer whitespace-nowrap"
               >
                 <Play className="h-3 w-3" aria-hidden="true" />
-                <span>Start Practice Demo</span>
+                <span>Start Demo</span>
               </button>
             )}
           </div>

@@ -310,7 +310,7 @@ export default function App() {
   const [activeView, setActiveView] = useState<AppView>('pitwall');
   const [telemetryTab, setTelemetryTab] = useState<'trace' | 'reports'>('trace');
   const [settingsInitialSection, setSettingsInitialSection] =
-    useState<EngineerSettingsModalSection>('profiles');
+    useState<EngineerSettingsModalSection>('presets');
   const [sessionPopoverOpen, setSessionPopoverOpen] = useState<boolean>(false);
   const [selectedSim, setSelectedSim] = useState<SimGameId>('lmu');
   const [selectedTrackId, setSelectedTrackId] = useState<string>('lemans');
@@ -2906,7 +2906,13 @@ export default function App() {
   );
 
   return (
-    <div className="min-h-screen bg-canvas text-text">
+    <div
+      className="min-h-screen bg-canvas text-text"
+      style={{
+        backgroundImage:
+          'radial-gradient(ellipse 90% 40% at 50% -5%, rgba(34,211,238,0.08), transparent 50%), radial-gradient(ellipse 50% 30% at 0% 20%, rgba(245,158,11,0.05), transparent 40%)',
+      }}
+    >
       <TopBar
         activeView={activeView}
         onSelectView={(view) => {
@@ -2918,14 +2924,23 @@ export default function App() {
         simStatus={simStatus}
         liveVoiceStatus={liveVoiceStatus}
         liveVoicePhase={liveVoicePhase}
+        statusLabel={
+          activeView === 'cockpit'
+            ? 'Mode: Drive'
+            : activeView === 'pitwall'
+              ? 'Mode: Engineer'
+              : activeView === 'telemetry'
+                ? 'Mode: Debrief'
+                : 'Mode: Garage'
+        }
         onToggleLiveVoice={handleToggleLiveVoice}
         onToggleLive={handleToggleLive}
         onOpenSettings={() => {
-          setSettingsInitialSection('profiles');
+          setSettingsInitialSection('presets');
           setIsSettingsOpen(true);
         }}
         onOpenSimBridge={() => {
-          setSettingsInitialSection('sim_bridge');
+          setSettingsInitialSection('connection');
           setIsSettingsOpen(true);
         }}
       />
@@ -3220,11 +3235,11 @@ export default function App() {
             recentPedalTrace={recentPedalTrace}
             skillMetrics={skillMetrics}
             onOpenSettings={() => {
-              setSettingsInitialSection('profiles');
+              setSettingsInitialSection('presets');
               setIsSettingsOpen(true);
             }}
             onOpenSimBridge={() => {
-              setSettingsInitialSection('sim_bridge');
+              setSettingsInitialSection('connection');
               setIsSettingsOpen(true);
             }}
             onOpenCockpitHud={() => setActiveView('cockpit')}
